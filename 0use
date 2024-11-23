@@ -1,0 +1,129 @@
+ 
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Declare variables for UserAvail and UserSecurityXML
+    DECLARE @UserSection1Avail INT, @UserSection2Avail INT, @UserSection3Avail INT;
+    DECLARE @UserSection4Avail INT, @UserSection5Avail INT, @UserSection6Avail INT;
+    DECLARE @UserSection7Avail INT, @UserSection8Avail INT, @UserSection9Avail INT;
+    DECLARE @UserSection10Avail INT;
+
+    DECLARE @UserSection1XML VARCHAR(1000), @UserSection2XML VARCHAR(1000), @UserSection3XML VARCHAR(1000);
+    DECLARE @UserSection4XML VARCHAR(1000), @UserSection5XML VARCHAR(1000), @UserSection6XML VARCHAR(1000);
+    DECLARE @UserSection7XML VARCHAR(1000), @UserSection8XML VARCHAR(1000), @UserSection9XML VARCHAR(1000);
+    DECLARE @UserSection10XML VARCHAR(1000);
+
+    -- Initialize UserAvail variables to 0 (default to no access)
+    SET @UserSection1Avail = 0; SET @UserSection2Avail = 0; SET @UserSection3Avail = 0;
+    SET @UserSection4Avail = 0; SET @UserSection5Avail = 0; SET @UserSection6Avail = 0;
+    SET @UserSection7Avail = 0; SET @UserSection8Avail = 0; SET @UserSection9Avail = 0;
+    SET @UserSection10Avail = 0;
+
+    -- Declare a cursor for ClientIDs
+    DECLARE Client_Cursor CURSOR FOR
+    SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+    -- Variables to hold the current client
+    DECLARE @CurrentClientID INT;
+
+    -- Open the cursor
+    OPEN Client_Cursor;
+
+    -- Fetch the first ClientID
+    FETCH NEXT FROM Client_Cursor INTO @CurrentClientID;
+
+    -- Loop through each ClientID using the cursor
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Execute the UserRandomSectionAvail procedure for each random section (1 to 10)
+        
+        -- Random Section 1
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @CurrentClientID, @UserID, 1, @UserSection1Avail OUTPUT, @UserSection1XML OUTPUT;
+
+        -- Random Section 2
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @CurrentClientID, @UserID, 2, @UserSection2Avail OUTPUT, @UserSection2XML OUTPUT;
+
+        -- Random Section 3
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @CurrentClientID, @UserID, 3, @UserSection3Avail OUTPUT, @UserSection3XML OUTPUT;
+
+        -- Random Section 4
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @CurrentClientID, @UserID, 4, @UserSection4Avail OUTPUT, @UserSection4XML OUTPUT;
+
+        -- Random Section 5
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @CurrentClientID, @UserID, 5, @UserSection5Avail OUTPUT, @UserSection5XML OUTPUT;
+
+        -- Random Section 6
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @CurrentClientID, @UserID, 6, @UserSection6Avail OUTPUT, @UserSection6XML OUTPUT;
+
+        -- Random Section 7
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @CurrentClientID, @UserID, 7, @UserSection7Avail OUTPUT, @UserSection7XML OUTPUT;
+
+        -- Random Section 8
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @CurrentClientID, @UserID, 8, @UserSection8Avail OUTPUT, @UserSection8XML OUTPUT;
+
+        -- Random Section 9
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @CurrentClientID, @UserID, 9, @UserSection9Avail OUTPUT, @UserSection9XML OUTPUT;
+
+        -- Random Section 10
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @CurrentClientID, @UserID, 10, @UserSection10Avail OUTPUT, @UserSection10XML OUTPUT;
+
+        -- Fetch the next ClientID from the cursor
+        FETCH NEXT FROM Client_Cursor INTO @CurrentClientID;
+    END;
+
+    -- Close and deallocate the cursor
+    CLOSE Client_Cursor;
+    DEALLOCATE Client_Cursor;
+
+    -- Step 3: Return UserAvail and SecurityXML information for each Random Section
+    SELECT 
+        1 AS RandomSectionID, 
+        CAST(@UserSection1Avail AS BIT) AS UserAvail, 
+        @UserSection1XML AS SecurityXML
+    UNION ALL
+    SELECT 
+        2 AS RandomSectionID, 
+        CAST(@UserSection2Avail AS BIT) AS UserAvail, 
+        @UserSection2XML AS SecurityXML
+    UNION ALL
+    SELECT 
+        3 AS RandomSectionID, 
+        CAST(@UserSection3Avail AS BIT) AS UserAvail, 
+        @UserSection3XML AS SecurityXML
+    UNION ALL
+    SELECT 
+        4 AS RandomSectionID, 
+        CAST(@UserSection4Avail AS BIT) AS UserAvail, 
+        @UserSection4XML AS SecurityXML
+    UNION ALL
+    SELECT 
+        5 AS RandomSectionID, 
+        CAST(@UserSection5Avail AS BIT) AS UserAvail, 
+        @UserSection5XML AS SecurityXML
+    UNION ALL
+    SELECT 
+        6 AS RandomSectionID, 
+        CAST(@UserSection6Avail AS BIT) AS UserAvail, 
+        @UserSection6XML AS SecurityXML
+    UNION ALL
+    SELECT 
+        7 AS RandomSectionID, 
+        CAST(@UserSection7Avail AS BIT) AS UserAvail, 
+        @UserSection7XML AS SecurityXML
+    UNION ALL
+    SELECT 
+        8 AS RandomSectionID, 
+        CAST(@UserSection8Avail AS BIT) AS UserAvail, 
+        @UserSection8XML AS SecurityXML
+    UNION ALL
+    SELECT 
+        9 AS RandomSectionID, 
+        CAST(@UserSection9Avail AS BIT) AS UserAvail, 
+        @UserSection9XML AS SecurityXML
+    UNION ALL
+    SELECT 
+        10 AS RandomSectionID, 
+        CAST(@UserSection10Avail AS BIT) AS UserAvail, 
+        @UserSection10XML AS SecurityXML
+    ORDER BY RandomSectionID;
+END;
