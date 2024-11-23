@@ -92,7 +92,7 @@ BEGIN
         -- Process Each RandomSectionID
         DECLARE @SectionID INT;
         DECLARE @ClientAvail INT;
-        DECLARE @SecurityXML VARCHAR(1000);
+        DECLARE @ClientSecurityXML VARCHAR(1000);
 
         DECLARE SectionCursor CURSOR LOCAL FAST_FORWARD FOR
         SELECT RandomSectionID FROM #RandomSections;
@@ -103,7 +103,7 @@ BEGIN
         WHILE @@FETCH_STATUS = 0
         BEGIN
             SET @ClientAvail = NULL;
-            SET @SecurityXML = NULL;
+            SET @ClientSecurityXML = NULL;
 
             -- Replicate Logic from web_Intranet_MyeMgmt_ClientRandomSectionAvail
 
@@ -111,7 +111,7 @@ BEGIN
             IF @ClientTypeID = 2
             BEGIN
                 -- Check Group Level
-                SELECT TOP 1 @ClientAvail = accessflag, @SecurityXML = SECURITYXML
+                SELECT TOP 1 @ClientAvail = accessflag, @ClientSecurityXML = SECURITYXML
                 FROM myescreenrandomclientsectionsettings
                 WHERE ClientID = @CurrentClientID AND ClientTypeID = 2 AND RandomSectionID = @SectionID;
 
@@ -121,7 +121,7 @@ BEGIN
             ELSE IF @ClientTypeID = 1
             BEGIN
                 -- Check Master Level
-                SELECT TOP 1 @ClientAvail = accessflag, @SecurityXML = SECURITYXML
+                SELECT TOP 1 @ClientAvail = accessflag, @ClientSecurityXML = SECURITYXML
                 FROM myescreenrandomclientsectionsettings
                 WHERE ClientID = @CurrentClientID AND ClientTypeID = 1 AND RandomSectionID = @SectionID;
 
@@ -130,7 +130,7 @@ BEGIN
                     -- Check Group Level
                     IF @GroupID IS NOT NULL
                     BEGIN
-                        SELECT TOP 1 @ClientAvail = accessflag, @SecurityXML = SECURITYXML
+                        SELECT TOP 1 @ClientAvail = accessflag, @ClientSecurityXML = SECURITYXML
                         FROM myescreenrandomclientsectionsettings
                         WHERE ClientID = @GroupID AND ClientTypeID = 1 AND RandomSectionID = @SectionID;
                     END
@@ -142,7 +142,7 @@ BEGIN
             ELSE IF @ClientTypeID = 0
             BEGIN
                 -- Check Client Level
-                SELECT TOP 1 @ClientAvail = accessflag, @SecurityXML = SECURITYXML
+                SELECT TOP 1 @ClientAvail = accessflag, @ClientSecurityXML = SECURITYXML
                 FROM myescreenrandomclientsectionsettings
                 WHERE ClientID = @CurrentClientID AND ClientTypeID = 0 AND RandomSectionID = @SectionID;
 
@@ -151,7 +151,7 @@ BEGIN
                     -- Check Master Level
                     IF @MasterID IS NOT NULL
                     BEGIN
-                        SELECT TOP 1 @ClientAvail = accessflag, @SecurityXML = SECURITYXML
+                        SELECT TOP 1 @ClientAvail = accessflag, @ClientSecurityXML = SECURITYXML
                         FROM myescreenrandomclientsectionsettings
                         WHERE ClientID = @MasterID AND ClientTypeID = 0 AND RandomSectionID = @SectionID;
                     END
@@ -159,7 +159,7 @@ BEGIN
                     IF @ClientAvail IS NULL AND @GroupID IS NOT NULL
                     BEGIN
                         -- Check Group Level
-                        SELECT TOP 1 @ClientAvail = accessflag, @SecurityXML = SECURITYXML
+                        SELECT TOP 1 @ClientAvail = accessflag, @ClientSecurityXML = SECURITYXML
                         FROM myescreenrandomclientsectionsettings
                         WHERE ClientID = @GroupID AND ClientTypeID = 0 AND RandomSectionID = @SectionID;
                     END
@@ -173,7 +173,8 @@ BEGIN
             IF @ClientAvail = 1
             BEGIN
                 UPDATE #ClientAvailability
-                SET ClientAvail = 1, SecurityXML = @SecurityXML
+                SET ClientAvail = 1, 
+                    SecurityXML = CASE WHEN SecurityXML IS NULL THEN @ClientSecurityXML ELSE SecurityXML END
                 WHERE RandomSectionID = @SectionID;
             END
 
