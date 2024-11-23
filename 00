@@ -1,4 +1,6 @@
- 
+ALTER PROC [dbo].[usp_MyeUsers_get_randomsSubmenu]
+    (@CLIENTID INT, @DynamicClientID INT, @UserID INT)
+AS
 BEGIN
     SET NOCOUNT ON;
 
@@ -45,14 +47,33 @@ BEGIN
         SET @RandomSectionID = 1;
         WHILE @RandomSectionID <= 10
         BEGIN
-            INSERT INTO #Results (RandomSectionID, ClientAvail, UserAvail, SecurityXML)
-            SELECT
-                @RandomSectionID,
-                -- Call stored procedures for each client in the batch and set the outputs
-                (SELECT @AvailLoop = 0; EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail cb.ClientID, @RandomSectionID, @AvailLoop OUTPUT; @AvailLoop) AS ClientAvail,
-                (SELECT @UserSectionXML = ''; @AvailLoop = 0; EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail cb.ClientID, @UserID, @RandomSectionID, @AvailLoop OUTPUT, @UserSectionXML OUTPUT; @AvailLoop) AS UserAvail,
-                @UserSectionXML AS SecurityXML
-            FROM #CurrentBatch cb;
+            -- Loop through each client in the current batch
+            DECLARE BatchCursor CURSOR FOR
+            SELECT ClientID FROM #CurrentBatch;
+
+            OPEN BatchCursor;
+            FETCH NEXT FROM BatchCursor INTO @DCC_ClientID;
+
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                -- Execute stored procedure for user section availability
+                EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail 
+                    @DCC_ClientID, @UserID, @RandomSectionID, @AvailLoop OUTPUT, @UserSectionXML OUTPUT;
+
+                -- Insert the results into #Results table
+                INSERT INTO #Results (RandomSectionID, ClientAvail, UserAvail, SecurityXML)
+                VALUES (
+                    @RandomSectionID,
+                    (SELECT @AvailLoop = 0; EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, @RandomSectionID, @AvailLoop OUTPUT; @AvailLoop),
+                    @AvailLoop,
+                    @UserSectionXML
+                );
+
+                FETCH NEXT FROM BatchCursor INTO @DCC_ClientID;
+            END
+
+            CLOSE BatchCursor;
+            DEALLOCATE BatchCursor;
 
             SET @RandomSectionID = @RandomSectionID + 1;
         END
