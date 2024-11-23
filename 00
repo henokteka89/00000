@@ -1,6 +1,4 @@
-ALTER PROC [dbo].[usp_MyeUsers_get_randomsSubmenu]
-    (@CLIENTID INT, @DynamicClientID INT, @UserID INT)
-AS
+ 
 BEGIN
     SET NOCOUNT ON;
 
