@@ -2,6 +2,138 @@
 BEGIN
     SET NOCOUNT ON;
 
+    -- Temporary table to store ClientIDs for batch processing
+    CREATE TABLE #DynamicClientIDs (
+        ClientID INT PRIMARY KEY
+    );
+
+    -- Populate the temporary table with the dynamic ClientIDs
+    INSERT INTO #DynamicClientIDs (ClientID)
+    SELECT ClientID 
+    FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+    -- Declare variables for tracking ClientAvail for each random section (1 to 10)
+    DECLARE @ClientSection1Avail INT, @ClientSection2Avail INT, @ClientSection3Avail INT;
+    DECLARE @ClientSection4Avail INT, @ClientSection5Avail INT, @ClientSection6Avail INT;
+    DECLARE @ClientSection7Avail INT, @ClientSection8Avail INT, @ClientSection9Avail INT;
+    DECLARE @ClientSection10Avail INT;
+
+    -- Initialize the variables to 0 (no access by default)
+    SET @ClientSection1Avail = 0; SET @ClientSection2Avail = 0; SET @ClientSection3Avail = 0;
+    SET @ClientSection4Avail = 0; SET @ClientSection5Avail = 0; SET @ClientSection6Avail = 0;
+    SET @ClientSection7Avail = 0; SET @ClientSection8Avail = 0; SET @ClientSection9Avail = 0;
+    SET @ClientSection10Avail = 0;
+
+    -- Variables for batch processing
+    DECLARE @BatchSize INT = 500;
+    DECLARE @MinID INT, @MaxID INT;
+
+    -- Get the range for processing in batches
+    SELECT @MinID = MIN(ClientID), @MaxID = MAX(ClientID) FROM #DynamicClientIDs;
+
+    -- Process in batches
+    WHILE @MinID IS NOT NULL AND @MinID <= @MaxID
+    BEGIN
+        -- Get the next batch of ClientIDs
+        DECLARE @BatchTable TABLE (ClientID INT PRIMARY KEY);
+
+        INSERT INTO @BatchTable (ClientID)
+        SELECT TOP (@BatchSize) ClientID
+        FROM #DynamicClientIDs
+        WHERE ClientID >= @MinID
+        ORDER BY ClientID;
+
+        -- Update `ClientAvail` for each Random Section (1 to 10) based on the current batch of `ClientIDs`
+        DECLARE @CurrentClientID INT;
+        
+        DECLARE Batch_Cursor CURSOR FOR SELECT ClientID FROM @BatchTable;
+        OPEN Batch_Cursor;
+        FETCH NEXT FROM Batch_Cursor INTO @CurrentClientID;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- Random Section 1
+            EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @CurrentClientID, 1, @AvailLoop OUTPUT;
+            IF @AvailLoop = 1 SET @ClientSection1Avail = 1;
+
+            -- Random Section 2
+            EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @CurrentClientID, 2, @AvailLoop OUTPUT;
+            IF @AvailLoop = 1 SET @ClientSection2Avail = 1;
+
+            -- Random Section 3
+            EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @CurrentClientID, 3, @AvailLoop OUTPUT;
+            IF @AvailLoop = 1 SET @ClientSection3Avail = 1;
+
+            -- Continue for other Random Sections up to 10...
+
+            -- Fetch the next ClientID from the batch
+            FETCH NEXT FROM Batch_Cursor INTO @CurrentClientID;
+        END;
+
+        CLOSE Batch_Cursor;
+        DEALLOCATE Batch_Cursor;
+
+        -- Update `@MinID` to move to the next batch
+        SET @MinID = (SELECT MIN(ClientID) FROM #DynamicClientIDs WHERE ClientID > @MinID + @BatchSize);
+    END;
+
+    -- Step 3: Return the `ClientAvail` information for each Random Section
+    SELECT 
+        1 AS RandomSectionID, CAST(@ClientSection1Avail AS BIT) AS ClientAvail
+    UNION ALL
+    SELECT 
+        2 AS RandomSectionID, CAST(@ClientSection2Avail AS BIT) AS ClientAvail
+    UNION ALL
+    SELECT 
+        3 AS RandomSectionID, CAST(@ClientSection3Avail AS BIT) AS ClientAvail
+    UNION ALL
+    SELECT 
+        4 AS RandomSectionID, CAST(@ClientSection4Avail AS BIT) AS ClientAvail
+    UNION ALL
+    SELECT 
+        5 AS RandomSectionID, CAST(@ClientSection5Avail AS BIT) AS ClientAvail
+    UNION ALL
+    SELECT 
+        6 AS RandomSectionID, CAST(@ClientSection6Avail AS BIT) AS ClientAvail
+    UNION ALL
+    SELECT 
+        7 AS RandomSectionID, CAST(@ClientSection7Avail AS BIT) AS ClientAvail
+    UNION ALL
+    SELECT 
+        8 AS RandomSectionID, CAST(@ClientSection8Avail AS BIT) AS ClientAvail
+    UNION ALL
+    SELECT 
+        9 AS RandomSectionID, CAST(@ClientSection9Avail AS BIT) AS ClientAvail
+    UNION ALL
+    SELECT 
+        10 AS RandomSectionID, CAST(@ClientSection10Avail AS BIT) AS ClientAvail
+    ORDER BY RandomSectionID;
+
+    -- Drop temporary table
+    DROP TABLE #DynamicClientIDs;
+END;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+--good 
+BEGIN
+    SET NOCOUNT ON;
+
     DECLARE @DCC_ClientID INT;
     DECLARE @AvailLoop INT;
 
