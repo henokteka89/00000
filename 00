@@ -1,104 +1,136 @@
  
+DECLARE @AvailLoop INT;
+
+DECLARE @UserSection1Avail INT; DECLARE @UserSection2Avail INT; DECLARE @UserSection3Avail INT;
+DECLARE @UserSection4Avail INT; DECLARE @UserSection5Avail INT; DECLARE @UserSection6Avail INT;
+DECLARE @UserSection7Avail INT; DECLARE @UserSection8Avail INT; DECLARE @UserSection9Avail INT;
+DECLARE @UserSection10Avail INT;
+
+DECLARE @UserSection1XML VARCHAR(1000); DECLARE @UserSection2XML VARCHAR(1000); DECLARE @UserSection3XML VARCHAR(1000);
+DECLARE @UserSection4XML VARCHAR(1000); DECLARE @UserSection5XML VARCHAR(1000); DECLARE @UserSection6XML VARCHAR(1000);
+DECLARE @UserSection7XML VARCHAR(1000); DECLARE @UserSection8XML VARCHAR(1000); DECLARE @UserSection9XML VARCHAR(1000);
+DECLARE @UserSection10XML VARCHAR(1000);
+
+DECLARE @ClientSection1Avail INT; DECLARE @ClientSection2Avail INT; DECLARE @ClientSection3Avail INT;
+DECLARE @ClientSection4Avail INT; DECLARE @ClientSection5Avail INT; DECLARE @ClientSection6Avail INT;
+DECLARE @ClientSection7Avail INT; DECLARE @ClientSection8Avail INT; DECLARE @ClientSection9Avail INT;
+DECLARE @ClientSection10Avail INT;
+
+SET @UserSection1Avail = 0; SET @UserSection2Avail = 0; SET @UserSection3Avail = 0;
+SET @UserSection4Avail = 0; SET @UserSection5Avail = 0; SET @UserSection6Avail = 0;
+SET @UserSection7Avail = 0; SET @UserSection8Avail = 0; SET @UserSection9Avail = 0;
+SET @UserSection10Avail = 0;
+
+SET @ClientSection1Avail = 0; SET @ClientSection2Avail = 0; SET @ClientSection3Avail = 0;
+SET @ClientSection4Avail = 0; SET @ClientSection5Avail = 0; SET @ClientSection6Avail = 0;
+SET @ClientSection7Avail = 0; SET @ClientSection8Avail = 0; SET @ClientSection9Avail = 0;
+SET @ClientSection10Avail = 0;
+
+-- Process in batches of 500
+DECLARE @BatchStart INT = 0;
+DECLARE @BatchSize INT = 500;
+DECLARE @TotalClients INT;
+
+-- Get the total count of clients
+SELECT @TotalClients = COUNT(*)
+FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+WHILE @BatchStart < @TotalClients
 BEGIN
-    SET NOCOUNT ON;
-
-    -- Temporary table to store results
-    CREATE TABLE #Results (
-        RandomSectionID INT,
-        ClientAvail INT,
-        UserAvail INT,
-        SecurityXML VARCHAR(1000)
-    );
-
-    -- Store all relevant Client IDs
+    -- Process the batch
+    WITH ClientBatch AS (
+        SELECT ClientID, ROW_NUMBER() OVER (ORDER BY ClientID) AS RowNum
+        FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID)
+    )
     SELECT ClientID
-    INTO #ClientIDs
-    FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+    INTO #BatchClients
+    FROM ClientBatch
+    WHERE RowNum > @BatchStart AND RowNum <= @BatchStart + @BatchSize;
 
-    -- Variables for batch processing
-    DECLARE @BatchSize INT = 500;
-    DECLARE @StartRow INT = 0;
-    DECLARE @TotalRows INT;
+    DECLARE @DCC_ClientID INT;
 
-    -- Get total count of rows
-    SELECT @TotalRows = COUNT(*) FROM #ClientIDs;
+    -- Loop through the batch
+    DECLARE Batch_Cursor CURSOR FOR
+    SELECT ClientID FROM #BatchClients;
 
-    -- Process in batches of 500
-    WHILE @StartRow < @TotalRows
+    OPEN Batch_Cursor;
+    FETCH NEXT FROM Batch_Cursor INTO @DCC_ClientID;
+
+    WHILE @@FETCH_STATUS = 0
     BEGIN
-        ;WITH Batch AS (
-            SELECT ClientID, ROW_NUMBER() OVER (ORDER BY ClientID) AS RowNum
-            FROM #ClientIDs
-        )
-        SELECT ClientID
-        INTO #CurrentBatch
-        FROM Batch
-        WHERE RowNum > @StartRow AND RowNum <= (@StartRow + @BatchSize);
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @DCC_ClientID, @UserID, 1, @AvailLoop OUTPUT, @UserSection1XML OUTPUT;
 
-        -- Process each client in the current batch
-        DECLARE @DCC_ClientID INT;
-        DECLARE @RandomSectionID INT;
-        DECLARE @AvailLoop INT;
-        DECLARE @UserSectionXML VARCHAR(1000);
-
-        -- Iterate over sections (1 to 10) for each client in the batch
-        SET @RandomSectionID = 1;
-        WHILE @RandomSectionID <= 10
+        -- If we FIND any on, then we are a go...
+        IF @AvailLoop = 1
         BEGIN
-            -- Loop through each client in the current batch
-            DECLARE BatchCursor CURSOR FOR
-            SELECT ClientID FROM #CurrentBatch;
-
-            OPEN BatchCursor;
-            FETCH NEXT FROM BatchCursor INTO @DCC_ClientID;
-
-            WHILE @@FETCH_STATUS = 0
-            BEGIN
-                -- Execute stored procedure for user section availability
-                EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail 
-                    @DCC_ClientID, @UserID, @RandomSectionID, @AvailLoop OUTPUT, @UserSectionXML OUTPUT;
-
-                -- Insert the results into #Results table
-                INSERT INTO #Results (RandomSectionID, ClientAvail, UserAvail, SecurityXML)
-                VALUES (
-                    @RandomSectionID,
-                    (SELECT @AvailLoop = 0; EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, @RandomSectionID, @AvailLoop OUTPUT; @AvailLoop),
-                    @AvailLoop,
-                    @UserSectionXML
-                );
-
-                FETCH NEXT FROM BatchCursor INTO @DCC_ClientID;
-            END
-
-            CLOSE BatchCursor;
-            DEALLOCATE BatchCursor;
-
-            SET @RandomSectionID = @RandomSectionID + 1;
+            SET @UserSection1Avail = 1;
         END
 
-        -- Drop the temp table for the current batch
-        DROP TABLE #CurrentBatch;
+        EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, 1, @AvailLoop OUTPUT;
 
-        -- Move to the next batch
-        SET @StartRow = @StartRow + @BatchSize;
-    END
+        -- If we FIND any on, then we are a go...
+        IF @AvailLoop = 1
+        BEGIN
+            SET @ClientSection1Avail = 1;
+        END
 
-    -- Return final result set
-    SELECT 
-        r.RandomSectionID,
-        r.ClientAvail,
-        r.UserAvail,
-        r.SecurityXML,
-        rs.menutext,
-        rs.menuactionv2,
-        rs.description
-    FROM #Results r
-    INNER JOIN randomsection rs ON r.RandomSectionID = rs.RandomSectionID
-    ORDER BY r.RandomSectionID;
+        -- Repeat for sections 2 to 10
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @DCC_ClientID, @UserID, 2, @AvailLoop OUTPUT, @UserSection2XML OUTPUT;
+        IF @AvailLoop = 1 SET @UserSection2Avail = 1;
+        EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, 2, @AvailLoop OUTPUT;
+        IF @AvailLoop = 1 SET @ClientSection2Avail = 1;
 
-    -- Clean up temporary tables
-    DROP TABLE #Results;
-    DROP TABLE #ClientIDs;
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @DCC_ClientID, @UserID, 3, @AvailLoop OUTPUT, @UserSection3XML OUTPUT;
+        IF @AvailLoop = 1 SET @UserSection3Avail = 1;
+        EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, 3, @AvailLoop OUTPUT;
+        IF @AvailLoop = 1 SET @ClientSection3Avail = 1;
 
-    SET NOCOUNT OFF;
-END
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @DCC_ClientID, @UserID, 4, @AvailLoop OUTPUT, @UserSection4XML OUTPUT;
+        IF @AvailLoop = 1 SET @UserSection4Avail = 1;
+        EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, 4, @AvailLoop OUTPUT;
+        IF @AvailLoop = 1 SET @ClientSection4Avail = 1;
+
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @DCC_ClientID, @UserID, 5, @AvailLoop OUTPUT, @UserSection5XML OUTPUT;
+        IF @AvailLoop = 1 SET @UserSection5Avail = 1;
+        EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, 5, @AvailLoop OUTPUT;
+        IF @AvailLoop = 1 SET @ClientSection5Avail = 1;
+
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @DCC_ClientID, @UserID, 6, @AvailLoop OUTPUT, @UserSection6XML OUTPUT;
+        IF @AvailLoop = 1 SET @UserSection6Avail = 1;
+        EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, 6, @AvailLoop OUTPUT;
+        IF @AvailLoop = 1 SET @ClientSection6Avail = 1;
+
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @DCC_ClientID, @UserID, 7, @AvailLoop OUTPUT, @UserSection7XML OUTPUT;
+        IF @AvailLoop = 1 SET @UserSection7Avail = 1;
+        EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, 7, @AvailLoop OUTPUT;
+        IF @AvailLoop = 1 SET @ClientSection7Avail = 1;
+
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @DCC_ClientID, @UserID, 8, @AvailLoop OUTPUT, @UserSection8XML OUTPUT;
+        IF @AvailLoop = 1 SET @UserSection8Avail = 1;
+        EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, 8, @AvailLoop OUTPUT;
+        IF @AvailLoop = 1 SET @ClientSection8Avail = 1;
+
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @DCC_ClientID, @UserID, 9, @AvailLoop OUTPUT, @UserSection9XML OUTPUT;
+        IF @AvailLoop = 1 SET @UserSection9Avail = 1;
+        EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, 9, @AvailLoop OUTPUT;
+        IF @AvailLoop = 1 SET @ClientSection9Avail = 1;
+
+        EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail @DCC_ClientID, @UserID, 10, @AvailLoop OUTPUT, @UserSection10XML OUTPUT;
+        IF @AvailLoop = 1 SET @UserSection10Avail = 1;
+        EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail @DCC_ClientID, 10, @AvailLoop OUTPUT;
+        IF @AvailLoop = 1 SET @ClientSection10Avail = 1;
+
+        FETCH NEXT FROM Batch_Cursor INTO @DCC_ClientID;
+    END;
+
+    CLOSE Batch_Cursor;
+    DEALLOCATE Batch_Cursor;
+
+    DROP TABLE #BatchClients;
+
+    SET @BatchStart = @BatchStart + @BatchSize;
+END;
+
+-- Get the goods...
+SELECT 
+    CAST
