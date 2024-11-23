@@ -1,0 +1,85 @@
+ 
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Temporary table to store results
+    CREATE TABLE #Results (
+        RandomSectionID INT,
+        ClientAvail INT,
+        UserAvail INT,
+        SecurityXML VARCHAR(1000)
+    );
+
+    -- Store all relevant Client IDs
+    SELECT ClientID
+    INTO #ClientIDs
+    FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+    -- Variables for batch processing
+    DECLARE @BatchSize INT = 500;
+    DECLARE @StartRow INT = 0;
+    DECLARE @TotalRows INT;
+
+    -- Get total count of rows
+    SELECT @TotalRows = COUNT(*) FROM #ClientIDs;
+
+    -- Process in batches of 500
+    WHILE @StartRow < @TotalRows
+    BEGIN
+        ;WITH Batch AS (
+            SELECT ClientID, ROW_NUMBER() OVER (ORDER BY ClientID) AS RowNum
+            FROM #ClientIDs
+        )
+        SELECT ClientID
+        INTO #CurrentBatch
+        FROM Batch
+        WHERE RowNum > @StartRow AND RowNum <= (@StartRow + @BatchSize);
+
+        -- Process each client in the current batch
+        DECLARE @DCC_ClientID INT;
+        DECLARE @RandomSectionID INT;
+        DECLARE @AvailLoop INT;
+        DECLARE @UserSectionXML VARCHAR(1000);
+
+        -- Iterate over sections (1 to 10) for each client in the batch
+        SET @RandomSectionID = 1;
+        WHILE @RandomSectionID <= 10
+        BEGIN
+            INSERT INTO #Results (RandomSectionID, ClientAvail, UserAvail, SecurityXML)
+            SELECT
+                @RandomSectionID,
+                -- Call stored procedures for each client in the batch and set the outputs
+                (SELECT @AvailLoop = 0; EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail cb.ClientID, @RandomSectionID, @AvailLoop OUTPUT; @AvailLoop) AS ClientAvail,
+                (SELECT @UserSectionXML = ''; @AvailLoop = 0; EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail cb.ClientID, @UserID, @RandomSectionID, @AvailLoop OUTPUT, @UserSectionXML OUTPUT; @AvailLoop) AS UserAvail,
+                @UserSectionXML AS SecurityXML
+            FROM #CurrentBatch cb;
+
+            SET @RandomSectionID = @RandomSectionID + 1;
+        END
+
+        -- Drop the temp table for the current batch
+        DROP TABLE #CurrentBatch;
+
+        -- Move to the next batch
+        SET @StartRow = @StartRow + @BatchSize;
+    END
+
+    -- Return final result set
+    SELECT 
+        r.RandomSectionID,
+        r.ClientAvail,
+        r.UserAvail,
+        r.SecurityXML,
+        rs.menutext,
+        rs.menuactionv2,
+        rs.description
+    FROM #Results r
+    INNER JOIN randomsection rs ON r.RandomSectionID = rs.RandomSectionID
+    ORDER BY r.RandomSectionID;
+
+    -- Clean up temporary tables
+    DROP TABLE #Results;
+    DROP TABLE #ClientIDs;
+
+    SET NOCOUNT OFF;
+END
