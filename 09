@@ -1,0 +1,47 @@
+
+    @DynamicClientID INT, -- DynamicClientID from the function
+    @SectionID INT,
+    @Result TABLE (
+        ClientID INT,
+        SectionID INT,
+        ClientAvail INT
+    )
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Retrieve ClientIDs dynamically as a table
+    DECLARE @ClientIDTable TABLE (ClientID INT);
+    INSERT INTO @ClientIDTable (ClientID)
+    SELECT ClientID
+    FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+    -- Process each ClientID
+    DECLARE @CurrentClientID INT;
+    DECLARE @ClientAvail INT;
+
+    DECLARE ClientCursor CURSOR LOCAL FAST_FORWARD FOR
+    SELECT ClientID FROM @ClientIDTable;
+
+    OPEN ClientCursor;
+    FETCH NEXT FROM ClientCursor INTO @CurrentClientID;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Call the original stored procedure
+        EXEC [dbo].[web_Intranet_MyeMgmt_ClientRandomSectionAvail]
+            @ClientID = @CurrentClientID,
+            @SectionID = @SectionID,
+            @Avail = @ClientAvail OUTPUT;
+
+        -- Insert results into the output table
+        INSERT INTO @Result (ClientID, SectionID, ClientAvail)
+        VALUES (@CurrentClientID, @SectionID, @ClientAvail);
+
+        FETCH NEXT FROM ClientCursor INTO @CurrentClientID;
+    END;
+
+    CLOSE ClientCursor;
+    DEALLOCATE ClientCursor;
+END;
+GO
