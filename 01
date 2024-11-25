@@ -1,61 +1,46 @@
+WITH RandomSections AS (
+    SELECT RandomSectionID
+    FROM randomsection
+    WHERE RandomSectionID BETWEEN 1 AND 10
+),
+ClientHierarchy AS (
+    SELECT 
+        ca.ClientID,
+        ca.ClientAccount,
+        ca.ClientSubAccount,
+        CASE 
+            WHEN ca.ClientSubAccount <> 0 THEN 0 -- Subclient
+            WHEN EXISTS (SELECT 1 FROM nationalaccountextras na WHERE na.GroupID = ca.ClientID) THEN 2 -- Group
+            ELSE 1 -- Master
+        END AS ClientTypeID,
+        COALESCE(na.GroupID, 0) AS GroupID,
+        COALESCE(m.ClientID, 0) AS MasterID
+    FROM clientaccounts ca
+    LEFT JOIN nationalaccountextras na ON na.ClientID = ca.ClientID
+    LEFT JOIN clientaccounts m ON ca.ClientAccount = m.ClientAccount AND m.ClientSubAccount = 0
+    WHERE ca.ClientID = @ClientID
+)
 SELECT
     rs.RandomSectionID,
-    uss.SecurityXML AS UserSecurityXML,
-    CASE
-        WHEN EXISTS (
-            SELECT 1 FROM myescreenrandomusersectionsettings uss
-            WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 0
-        ) THEN 'Denied'
-        WHEN EXISTS (
-            SELECT 1 FROM myescreenrandomusersectionsettings uss
-            WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 1
-        ) THEN 'Granted'
-        ELSE 'No Setting'
-    END AS UserAccess
-FROM randomsection rs
-LEFT JOIN myescreenrandomusersectionsettings uss
-ON rs.RandomSectionID = uss.RandomSectionID AND uss.UserID = @UserID;
-
-
-SELECT
-    rs.RandomSectionID,
-    csa.ClientID,
-    csa.SECURITYXML AS ClientSecurityXML
-FROM randomsection rs
-LEFT JOIN myescreenrandomclientsectionsettings csa
-ON rs.RandomSectionID = csa.RandomSectionID
-WHERE csa.ClientID IN (
-    SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID)
-);
-
-SELECT
-    rs.RandomSectionID,
-    u.UserSecurityXML,
-    c.ClientSecurityXML,
-    COALESCE(u.UserSecurityXML, c.ClientSecurityXML) AS FinalSecurityXML
-FROM randomsection rs
-LEFT JOIN #UserSecurityXML u ON rs.RandomSectionID = u.RandomSectionID
-LEFT JOIN (
-    SELECT RandomSectionID, MAX(ClientSecurityXML) AS ClientSecurityXML
-    FROM #ClientSecurityXML
-    GROUP BY RandomSectionID
-) c ON rs.RandomSectionID = c.RandomSectionID;
-
-
--- Final Aggregation with Explicit Precedence
-SELECT
-    rs.RandomSectionID,
-    CASE
-        WHEN ua.UserAvail = 0 THEN NULL -- User explicitly denied
-        ELSE COALESCE(ua.UserSecurityXML, ca.ClientSecurityXML, NULL) -- User takes precedence
-    END AS FinalSecurityXML
-FROM #RandomSections rs
-LEFT JOIN #UserSecurityXML ua ON rs.RandomSectionID = ua.RandomSectionID
-LEFT JOIN (
-    SELECT RandomSectionID, MAX(ClientSecurityXML) AS ClientSecurityXML
-    FROM #ClientSecurityXML
-    GROUP BY RandomSectionID
-) ca ON rs.RandomSectionID = ca.RandomSectionID;
-
-
-
+    COALESCE(
+        -- User-Level SecurityXML
+        (SELECT TOP 1 uss.SecurityXML 
+         FROM myescreenrandomusersectionsettings uss
+         WHERE uss.UserID = @UserID 
+           AND uss.RandomSectionID = rs.RandomSectionID
+           AND uss.accessflag = 1
+         ORDER BY uss.accessflag DESC),
+        -- Client-Level SecurityXML (Hierarchy: Client > Master > Group)
+        (SELECT TOP 1 css.SECURITYXML
+         FROM myescreenrandomclientsectionsettings css
+         WHERE css.RandomSectionID = rs.RandomSectionID
+           AND (
+               (css.ClientID = ch.ClientID AND css.ClientTypeID = 0) OR -- Client
+               (css.ClientID = ch.MasterID AND css.ClientTypeID = 0) OR -- Master
+               (css.ClientID = ch.GroupID AND css.ClientTypeID = 2)    -- Group
+           )
+         ORDER BY css.ClientTypeID ASC)
+    ) AS FinalSecurityXML
+FROM RandomSections rs
+CROSS APPLY ClientHierarchy ch
+ORDER BY rs.RandomSectionID;
