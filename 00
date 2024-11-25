@@ -1,1 +1,122 @@
  
+CREATE VIEW vw_SectionAccess AS
+WITH RandomSections AS (
+    SELECT RandomSectionID, MenuText, MenuActionV2, Description
+    FROM randomsection
+    WHERE RandomSectionID BETWEEN 1 AND 10
+),
+ClientHierarchy AS (
+    SELECT
+        c.ClientID,
+        CASE
+            WHEN c.ClientSubAccount <> 0 THEN 0 -- Subclient
+            WHEN c.ClientSubAccount = 0 AND EXISTS (
+                SELECT 1 FROM nationalaccountextras WHERE groupid = c.ClientID
+            ) THEN 2 -- Group
+            ELSE 1 -- Master
+        END AS ClientTypeID,
+        COALESCE(m.ClientID, 0) AS MasterID,
+        COALESCE(na.GroupID, 0) AS GroupID
+    FROM clientaccounts c
+    LEFT JOIN clientaccounts m ON c.ClientAccount = m.ClientAccount AND m.ClientSubAccount = 0
+    LEFT JOIN nationalaccountextras na ON c.ClientID = na.ClientID
+),
+DynamicClients AS (
+    SELECT DISTINCT
+        COALESCE(dc.ClientID, ch.ClientID) AS ClientID,
+        ch.ClientTypeID,
+        ch.MasterID,
+        ch.GroupID
+    FROM ClientHierarchy ch
+    LEFT JOIN fn_DCG_GetClientIDsForDynamicClientID(NULL) dc -- Replace NULL with DynamicClientID
+        ON dc.ClientID = ch.ClientID
+),
+UserSectionAccess AS (
+    SELECT
+        uss.UserID,
+        uss.RandomSectionID,
+        uss.accessflag AS UserAccessFlag,
+        uss.SecurityXML AS UserSecurityXML
+    FROM myescreenrandomusersectionsettings uss
+),
+ClientSectionAccess AS (
+    SELECT
+        css.ClientID,
+        css.ClientTypeID,
+        css.RandomSectionID,
+        css.accessflag AS ClientAccessFlag,
+        css.SecurityXML AS ClientSecurityXML
+    FROM myescreenrandomclientsectionsettings css
+),
+SectionAvailability AS (
+    SELECT
+        rs.RandomSectionID,
+        dc.ClientID,
+        usa.UserID,
+        -- Calculate ClientAvail based on grouping logic
+        CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM ClientSectionAccess csa
+                WHERE csa.RandomSectionID = rs.RandomSectionID
+                AND (
+                    (csa.ClientID = dc.ClientID AND csa.ClientTypeID = dc.ClientTypeID) OR
+                    (csa.ClientID = dc.MasterID AND csa.ClientTypeID = 1) OR
+                    (csa.ClientID = dc.GroupID AND csa.ClientTypeID = 2)
+                )
+                AND csa.ClientAccessFlag = 1
+            ) THEN 1 -- Granted
+            ELSE 0 -- Denied
+        END AS ClientAvail,
+        -- Calculate UserAvail based on user and client access
+        CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM UserSectionAccess usa
+                WHERE usa.RandomSectionID = rs.RandomSectionID
+                AND usa.UserID = usa.UserID
+                AND usa.UserAccessFlag = 0
+            ) THEN 0 -- User Denied
+            WHEN EXISTS (
+                SELECT 1
+                FROM UserSectionAccess usa
+                WHERE usa.RandomSectionID = rs.RandomSectionID
+                AND usa.UserID = usa.UserID
+                AND usa.UserAccessFlag = 1
+            ) THEN 1 -- User Granted
+            ELSE 0 -- Default Denied
+        END AS UserAvail,
+        -- Combine SecurityXML based on user and client access
+        COALESCE(
+            (SELECT TOP 1 usa.UserSecurityXML
+             FROM UserSectionAccess usa
+             WHERE usa.RandomSectionID = rs.RandomSectionID
+             AND usa.UserID = usa.UserID
+             ORDER BY usa.UserAccessFlag DESC),
+            (SELECT TOP 1 csa.ClientSecurityXML
+             FROM ClientSectionAccess csa
+             WHERE csa.RandomSectionID = rs.RandomSectionID
+             AND (
+                 (csa.ClientID = dc.ClientID AND csa.ClientTypeID = dc.ClientTypeID) OR
+                 (csa.ClientID = dc.MasterID AND csa.ClientTypeID = 1) OR
+                 (csa.ClientID = dc.GroupID AND csa.ClientTypeID = 2)
+             )
+             ORDER BY csa.ClientAccessFlag DESC)
+        ) AS SecurityXML
+    FROM RandomSections rs
+    CROSS JOIN DynamicClients dc
+    LEFT JOIN UserSectionAccess usa ON rs.RandomSectionID = usa.RandomSectionID AND usa.UserID = usa.UserID
+)
+SELECT
+    sa.RandomSectionID,
+    sa.ClientID,
+    sa.UserID,
+    sa.ClientAvail,
+    sa.UserAvail,
+    sa.SecurityXML,
+    rs.MenuText,
+    rs.MenuActionV2,
+    rs.Description
+FROM SectionAvailability sa
+JOIN RandomSections rs ON sa.RandomSectionID = rs.RandomSectionID
+ORDER BY sa.RandomSectionID, sa.ClientID, sa.UserID;
