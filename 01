@@ -1,5 +1,11 @@
-WITH ClientDetails AS (
-    -- Step 1: Retrieve client hierarchy and their types
+WITH RandomSections AS (
+    -- Step 1: Random sections (1 to 10)
+    SELECT RandomSectionID, MenuText, MenuActionV2, Description
+    FROM randomsection
+    WHERE RandomSectionID BETWEEN 1 AND 10
+),
+ClientHierarchy AS (
+    -- Step 2: Client hierarchy
     SELECT 
         ca.ClientID,
         ca.ClientAccount,
@@ -17,85 +23,65 @@ WITH ClientDetails AS (
     WHERE ca.ClientID IN (SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID))
 ),
 UserSettings AS (
-    -- Step 2: User-level settings for all sections
+    -- Step 3: User-level access and XML
     SELECT
         rs.RandomSectionID,
         us.UserID,
         MAX(CASE WHEN us.AccessFlag = 0 THEN 0 WHEN us.AccessFlag = 1 THEN 1 ELSE NULL END) AS UserAccess,
         MAX(us.SecurityXML) AS UserSecurityXML
-    FROM randomsection rs
-    LEFT JOIN myescreenrandomusersectionsettings us ON rs.RandomSectionID = us.RandomSectionID AND us.UserID = @UserID
-    WHERE rs.RandomSectionID BETWEEN 1 AND 10
+    FROM RandomSections rs
+    LEFT JOIN myescreenrandomusersectionsettings us 
+        ON rs.RandomSectionID = us.RandomSectionID AND us.UserID = @UserID
     GROUP BY rs.RandomSectionID, us.UserID
 ),
 ClientSettings AS (
-    -- Step 3: Client-level settings for all sections across hierarchy levels
+    -- Step 4: Client-level access and XML for all hierarchy levels
     SELECT 
-        hl.ClientID,
-        hl.RandomSectionID,
-        MAX(cs.SecurityXML) AS ClientSecurityXML,
-        MAX(CASE WHEN cs.AccessFlag = 0 THEN 0 ELSE 1 END) AS ClientAccess -- Denied if any 0, else Granted
-    FROM (
-        SELECT 
-            cd.ClientID,
-            cd.ClientID AS ClientIDToCheck,
-            cd.ClientTypeID,
-            rs.RandomSectionID
-        FROM ClientDetails cd
-        CROSS JOIN (SELECT RandomSectionID FROM randomsection WHERE RandomSectionID BETWEEN 1 AND 10) rs
-
+        rs.RandomSectionID,
+        ch.ClientID,
+        MAX(CASE WHEN cs.AccessFlag = 0 THEN 0 WHEN cs.AccessFlag = 1 THEN 1 ELSE NULL END) AS ClientAccess,
+        MAX(cs.SecurityXML) AS ClientSecurityXML
+    FROM RandomSections rs
+    CROSS APPLY (
+        SELECT ch.ClientID, ch.ClientID AS ClientIDToCheck, ch.ClientTypeID
+        FROM ClientHierarchy ch
         UNION ALL
-
-        SELECT 
-            cd.ClientID,
-            cd.MasterID AS ClientIDToCheck,
-            cd.ClientTypeID,
-            rs.RandomSectionID
-        FROM ClientDetails cd
-        CROSS JOIN (SELECT RandomSectionID FROM randomsection WHERE RandomSectionID BETWEEN 1 AND 10) rs
-        WHERE cd.MasterID IS NOT NULL
-
+        SELECT ch.ClientID, ch.MasterID AS ClientIDToCheck, ch.ClientTypeID
+        FROM ClientHierarchy ch WHERE ch.MasterID IS NOT NULL
         UNION ALL
-
-        SELECT 
-            cd.ClientID,
-            cd.GroupID AS ClientIDToCheck,
-            cd.ClientTypeID,
-            rs.RandomSectionID
-        FROM ClientDetails cd
-        CROSS JOIN (SELECT RandomSectionID FROM randomsection WHERE RandomSectionID BETWEEN 1 AND 10) rs
-        WHERE cd.GroupID IS NOT NULL
-    ) hl
+        SELECT ch.ClientID, ch.GroupID AS ClientIDToCheck, ch.ClientTypeID
+        FROM ClientHierarchy ch WHERE ch.GroupID IS NOT NULL
+    ) ch
     LEFT JOIN myescreenrandomclientsectionsettings cs
-        ON hl.ClientIDToCheck = cs.ClientID
-        AND hl.ClientTypeID = cs.ClientTypeID
-        AND hl.RandomSectionID = cs.RandomSectionID
-    GROUP BY hl.ClientID, hl.RandomSectionID
+        ON rs.RandomSectionID = cs.RandomSectionID
+        AND ch.ClientIDToCheck = cs.ClientID
+        AND ch.ClientTypeID = cs.ClientTypeID
+    GROUP BY rs.RandomSectionID, ch.ClientID
 ),
-FinalSecurityXML AS (
-    -- Step 4: Combine user and client settings
+FinalResults AS (
+    -- Step 5: Combine user and client settings
     SELECT
         rs.RandomSectionID,
+        rs.MenuText,
+        rs.MenuActionV2,
+        rs.Description,
         COALESCE(us.UserSecurityXML, cs.ClientSecurityXML) AS FinalSecurityXML,
         CASE
             WHEN us.UserAccess = 0 THEN 0 -- User Denied
             WHEN cs.ClientAccess = 1 AND us.UserAccess = 1 THEN 1 -- Both Granted
             ELSE 0 -- Default Denied
         END AS FinalAccess
-    FROM randomsection rs
+    FROM RandomSections rs
     LEFT JOIN UserSettings us ON rs.RandomSectionID = us.RandomSectionID
     LEFT JOIN ClientSettings cs ON rs.RandomSectionID = cs.RandomSectionID
-    WHERE rs.RandomSectionID BETWEEN 1 AND 10
 )
 -- Final Output
-SELECT 
-    rs.RandomSectionID,
-    rs.MenuText,
-    rs.MenuActionV2,
-    rs.Description,
-    fs.FinalSecurityXML,
-    fs.FinalAccess
-FROM randomsection rs
-LEFT JOIN FinalSecurityXML fs ON rs.RandomSectionID = fs.RandomSectionID
-WHERE rs.RandomSectionID BETWEEN 1 AND 10
-ORDER BY rs.RandomSectionID;
+SELECT DISTINCT
+    fr.RandomSectionID,
+    fr.MenuText,
+    fr.MenuActionV2,
+    fr.Description,
+    fr.FinalSecurityXML,
+    fr.FinalAccess
+FROM FinalResults fr
+ORDER BY fr.RandomSectionID;
