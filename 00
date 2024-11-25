@@ -1,1 +1,127 @@
  
+ 
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Step 1: Retrieve all related ClientIDs for the given DynamicClientID
+    WITH ClientIDs AS (
+        SELECT ClientID
+        FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID)
+    ),
+
+    -- Step 2: Retrieve Random Sections (IDs 1 to 10)
+    RandomSections AS (
+        SELECT RandomSectionID, MenuText, MenuActionV2, Description
+        FROM randomsection
+        WHERE RandomSectionID BETWEEN 1 AND 10
+    ),
+
+    -- Step 3: Retrieve Client Account Details (Hierarchy)
+    ClientHierarchy AS (
+        SELECT
+            c.ClientID,
+            CASE
+                WHEN c.ClientSubAccount <> 0 THEN 0 -- Subclient
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM nationalaccountextras na
+                    WHERE na.GroupID = c.ClientID
+                ) THEN 2 -- Group
+                ELSE 1 -- Master
+            END AS ClientTypeID,
+            COALESCE(m.ClientID, 0) AS MasterID,
+            COALESCE(na.GroupID, 0) AS GroupID
+        FROM clientaccounts c
+        LEFT JOIN clientaccounts m
+            ON c.ClientAccount = m.ClientAccount AND m.ClientSubAccount = 0
+        LEFT JOIN nationalaccountextras na
+            ON c.ClientID = na.ClientID
+        WHERE c.ClientID IN (SELECT ClientID FROM ClientIDs)
+    ),
+
+    -- Step 4: User Access Data
+    UserAccess AS (
+        SELECT
+            uss.UserID,
+            uss.RandomSectionID,
+            uss.AccessFlag AS UserAccessFlag,
+            uss.SecurityXML AS UserSecurityXML
+        FROM myescreenrandomusersectionsettings uss
+        WHERE uss.UserID = @UserID
+    ),
+
+    -- Step 5: Client Access Data
+    ClientAccess AS (
+        SELECT
+            css.ClientID,
+            css.ClientTypeID,
+            css.RandomSectionID,
+            css.AccessFlag AS ClientAccessFlag,
+            css.SecurityXML AS ClientSecurityXML
+        FROM myescreenrandomclientsectionsettings css
+    ),
+
+    -- Step 6: Combine Client Hierarchy and Access for All Clients and Sections
+    CombinedAccess AS (
+        SELECT
+            rs.RandomSectionID,
+            ch.ClientID,
+            ch.ClientTypeID,
+            ch.MasterID,
+            ch.GroupID,
+            ca.ClientAccessFlag,
+            ca.ClientSecurityXML
+        FROM RandomSections rs
+        CROSS JOIN ClientHierarchy ch
+        LEFT JOIN ClientAccess ca
+            ON rs.RandomSectionID = ca.RandomSectionID
+            AND (
+                (ca.ClientID = ch.ClientID AND ca.ClientTypeID = ch.ClientTypeID) OR
+                (ca.ClientID = ch.MasterID AND ca.ClientTypeID = 1) OR
+                (ca.ClientID = ch.GroupID AND ca.ClientTypeID = 2)
+            )
+    ),
+
+    -- Step 7: Determine Final Availability
+    FinalAvailability AS (
+        SELECT
+            rs.RandomSectionID,
+            ch.ClientID,
+            ua.UserAccessFlag,
+            ua.UserSecurityXML,
+            ca.ClientAccessFlag,
+            ca.ClientSecurityXML,
+            -- Determine UserAvail
+            CASE
+                WHEN ua.UserAccessFlag = 0 THEN 0 -- User Denied
+                WHEN ca.ClientAccessFlag = 1 AND ua.UserAccessFlag = 1 THEN 1 -- Both Granted
+                ELSE 0 -- Default Denied
+            END AS UserAvail,
+            -- Determine SecurityXML based on hierarchy
+            COALESCE(
+                ua.UserSecurityXML,
+                ca.ClientSecurityXML
+            ) AS SecurityXML
+        FROM CombinedAccess ca
+        LEFT JOIN UserAccess ua
+            ON ca.RandomSectionID = ua.RandomSectionID
+        JOIN RandomSections rs
+            ON rs.RandomSectionID = ca.RandomSectionID
+        JOIN ClientHierarchy ch
+            ON ca.ClientID = ch.ClientID
+    )
+
+    -- Step 8: Final Output
+    SELECT DISTINCT
+        fa.RandomSectionID,
+        fa.ClientID,
+        fa.UserAvail,
+        fa.SecurityXML,
+        rs.MenuText,
+        rs.MenuActionV2,
+        rs.Description
+    FROM FinalAvailability fa
+    JOIN RandomSections rs
+        ON fa.RandomSectionID = rs.RandomSectionID
+    ORDER BY fa.RandomSectionID, fa.ClientID;
+END;
