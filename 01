@@ -1,11 +1,15 @@
 WITH RandomSections AS (
-    -- Step 1: Random sections (1 to 10)
-    SELECT RandomSectionID, MenuText, MenuActionV2, Description
+    -- Step 1: Retrieve Random Sections (IDs 1 to 10)
+    SELECT 
+        RandomSectionID, 
+        MenuText, 
+        MenuActionV2, 
+        Description
     FROM randomsection
     WHERE RandomSectionID BETWEEN 1 AND 10
 ),
 ClientHierarchy AS (
-    -- Step 2: Client hierarchy
+    -- Step 2: Build the hierarchy for all clients returned by the function
     SELECT 
         ca.ClientID,
         ca.ClientAccount,
@@ -20,51 +24,43 @@ ClientHierarchy AS (
     FROM clientaccounts ca
     LEFT JOIN nationalaccountextras nae ON nae.ClientID = ca.ClientID
     LEFT JOIN clientaccounts m ON m.ClientAccount = ca.ClientAccount AND m.ClientSubAccount = 0
-    WHERE ca.ClientID IN (SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID))
+    WHERE ca.ClientID IN (
+        SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID)
+    )
 ),
 UserSettings AS (
-    -- Step 3: User-level access and XML
+    -- Step 3: Retrieve user-level settings and their XML
     SELECT
         rs.RandomSectionID,
-        us.UserID,
         MAX(CASE WHEN us.AccessFlag = 0 THEN 0 WHEN us.AccessFlag = 1 THEN 1 ELSE NULL END) AS UserAccess,
         MAX(us.SecurityXML) AS UserSecurityXML
     FROM RandomSections rs
     LEFT JOIN myescreenrandomusersectionsettings us 
         ON rs.RandomSectionID = us.RandomSectionID AND us.UserID = @UserID
-    GROUP BY rs.RandomSectionID, us.UserID
+    GROUP BY rs.RandomSectionID
 ),
 ClientSettings AS (
-    -- Step 4: Client-level access and XML for all hierarchy levels
+    -- Step 4: Retrieve client-level settings and their XML for each hierarchy level
     SELECT 
         rs.RandomSectionID,
         ch.ClientID,
         MAX(CASE WHEN cs.AccessFlag = 0 THEN 0 WHEN cs.AccessFlag = 1 THEN 1 ELSE NULL END) AS ClientAccess,
         MAX(cs.SecurityXML) AS ClientSecurityXML
     FROM RandomSections rs
-    CROSS APPLY (
-        SELECT ch.ClientID, ch.ClientID AS ClientIDToCheck, ch.ClientTypeID
-        FROM ClientHierarchy ch
-        UNION ALL
-        SELECT ch.ClientID, ch.MasterID AS ClientIDToCheck, ch.ClientTypeID
-        FROM ClientHierarchy ch WHERE ch.MasterID IS NOT NULL
-        UNION ALL
-        SELECT ch.ClientID, ch.GroupID AS ClientIDToCheck, ch.ClientTypeID
-        FROM ClientHierarchy ch WHERE ch.GroupID IS NOT NULL
-    ) ch
+    JOIN ClientHierarchy ch ON 1 = 1 -- Cross-join each client and section
     LEFT JOIN myescreenrandomclientsectionsettings cs
         ON rs.RandomSectionID = cs.RandomSectionID
-        AND ch.ClientIDToCheck = cs.ClientID
-        AND ch.ClientTypeID = cs.ClientTypeID
+        AND (
+            (cs.ClientID = ch.ClientID AND cs.ClientTypeID = ch.ClientTypeID) OR
+            (cs.ClientID = ch.MasterID AND cs.ClientTypeID = ch.ClientTypeID) OR
+            (cs.ClientID = ch.GroupID AND cs.ClientTypeID = ch.ClientTypeID)
+        )
     GROUP BY rs.RandomSectionID, ch.ClientID
 ),
-FinalResults AS (
-    -- Step 5: Combine user and client settings
-    SELECT
+FinalSecurityXML AS (
+    -- Step 5: Determine final SecurityXML by prioritizing User over Client
+    SELECT 
         rs.RandomSectionID,
-        rs.MenuText,
-        rs.MenuActionV2,
-        rs.Description,
         COALESCE(us.UserSecurityXML, cs.ClientSecurityXML) AS FinalSecurityXML,
         CASE
             WHEN us.UserAccess = 0 THEN 0 -- User Denied
@@ -73,15 +69,20 @@ FinalResults AS (
         END AS FinalAccess
     FROM RandomSections rs
     LEFT JOIN UserSettings us ON rs.RandomSectionID = us.RandomSectionID
-    LEFT JOIN ClientSettings cs ON rs.RandomSectionID = cs.RandomSectionID
+    LEFT JOIN (
+        SELECT RandomSectionID, MAX(ClientAccess) AS ClientAccess, MAX(ClientSecurityXML) AS ClientSecurityXML
+        FROM ClientSettings
+        GROUP BY RandomSectionID
+    ) cs ON rs.RandomSectionID = cs.RandomSectionID
 )
 -- Final Output
-SELECT DISTINCT
-    fr.RandomSectionID,
-    fr.MenuText,
-    fr.MenuActionV2,
-    fr.Description,
-    fr.FinalSecurityXML,
-    fr.FinalAccess
-FROM FinalResults fr
-ORDER BY fr.RandomSectionID;
+SELECT 
+    rs.RandomSectionID,
+    rs.MenuText,
+    rs.MenuActionV2,
+    rs.Description,
+    COALESCE(fsx.FinalSecurityXML, 'NULL') AS FinalSecurityXML,
+    fsx.FinalAccess
+FROM RandomSections rs
+LEFT JOIN FinalSecurityXML fsx ON rs.RandomSectionID = fsx.RandomSectionID
+ORDER BY rs.RandomSectionID;
