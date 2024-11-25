@@ -1,156 +1,61 @@
- 
-BEGIN
-    SET NOCOUNT ON;
+SELECT
+    rs.RandomSectionID,
+    uss.SecurityXML AS UserSecurityXML,
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM myescreenrandomusersectionsettings uss
+            WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 0
+        ) THEN 'Denied'
+        WHEN EXISTS (
+            SELECT 1 FROM myescreenrandomusersectionsettings uss
+            WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 1
+        ) THEN 'Granted'
+        ELSE 'No Setting'
+    END AS UserAccess
+FROM randomsection rs
+LEFT JOIN myescreenrandomusersectionsettings uss
+ON rs.RandomSectionID = uss.RandomSectionID AND uss.UserID = @UserID;
 
-    -- Step 1: Retrieve Random Sections
-    SELECT RandomSectionID
-    INTO #RandomSections
-    FROM randomsection
-    WHERE RandomSectionID BETWEEN 1 AND 10;
 
-    -- Step 2: Retrieve ClientIDs
-    SELECT ClientID
-    INTO #ClientIDs
-    FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+SELECT
+    rs.RandomSectionID,
+    csa.ClientID,
+    csa.SECURITYXML AS ClientSecurityXML
+FROM randomsection rs
+LEFT JOIN myescreenrandomclientsectionsettings csa
+ON rs.RandomSectionID = csa.RandomSectionID
+WHERE csa.ClientID IN (
+    SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID)
+);
 
-    -- Step 3: User-Level SecurityXML
-    SELECT
-        rs.RandomSectionID,
-        uss.SecurityXML AS UserSecurityXML,
-        CASE
-            WHEN EXISTS (
-                SELECT 1 FROM myescreenrandomusersectionsettings uss
-                WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 0
-            ) THEN 'Denied'
-            WHEN EXISTS (
-                SELECT 1 FROM myescreenrandomusersectionsettings uss
-                WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 1
-            ) THEN 'Granted'
-            ELSE 'No Setting'
-        END AS UserAccess
-    INTO #UserSecurityXML
-    FROM #RandomSections rs
-    LEFT JOIN myescreenrandomusersectionsettings uss
-    ON rs.RandomSectionID = uss.RandomSectionID AND uss.UserID = @UserID;
+SELECT
+    rs.RandomSectionID,
+    u.UserSecurityXML,
+    c.ClientSecurityXML,
+    COALESCE(u.UserSecurityXML, c.ClientSecurityXML) AS FinalSecurityXML
+FROM randomsection rs
+LEFT JOIN #UserSecurityXML u ON rs.RandomSectionID = u.RandomSectionID
+LEFT JOIN (
+    SELECT RandomSectionID, MAX(ClientSecurityXML) AS ClientSecurityXML
+    FROM #ClientSecurityXML
+    GROUP BY RandomSectionID
+) c ON rs.RandomSectionID = c.RandomSectionID;
 
-    -- Step 4: Client-Level SecurityXML
-    CREATE TABLE #ClientSecurityXML (
-        RandomSectionID INT,
-        ClientID INT,
-        ClientSecurityXML VARCHAR(1000)
-    );
 
-    DECLARE @CurrentClientID INT;
-    DECLARE @SectionID INT;
-    DECLARE @ClientTypeID INT;
-    DECLARE @MasterID INT;
-    DECLARE @GroupID INT;
+-- Final Aggregation with Explicit Precedence
+SELECT
+    rs.RandomSectionID,
+    CASE
+        WHEN ua.UserAvail = 0 THEN NULL -- User explicitly denied
+        ELSE COALESCE(ua.UserSecurityXML, ca.ClientSecurityXML, NULL) -- User takes precedence
+    END AS FinalSecurityXML
+FROM #RandomSections rs
+LEFT JOIN #UserSecurityXML ua ON rs.RandomSectionID = ua.RandomSectionID
+LEFT JOIN (
+    SELECT RandomSectionID, MAX(ClientSecurityXML) AS ClientSecurityXML
+    FROM #ClientSecurityXML
+    GROUP BY RandomSectionID
+) ca ON rs.RandomSectionID = ca.RandomSectionID;
 
-    DECLARE ClientCursor CURSOR LOCAL FAST_FORWARD FOR
-    SELECT ClientID FROM #ClientIDs;
 
-    OPEN ClientCursor;
-    FETCH NEXT FROM ClientCursor INTO @CurrentClientID;
 
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        -- Determine Client Hierarchy
-        SELECT
-            @ClientTypeID = CASE
-                WHEN ca.ClientSubAccount <> 0 THEN 0 -- Client
-                WHEN EXISTS (SELECT 1 FROM nationalaccountextras na WHERE na.GroupID = ca.ClientID) THEN 2 -- Group
-                ELSE 1 -- Master
-            END,
-            @MasterID = (SELECT TOP 1 clientid FROM clientaccounts ca2 
-                         WHERE ca2.ClientAccount = ca.ClientAccount AND ca2.ClientSubAccount = 0),
-            @GroupID = (SELECT TOP 1 GroupID FROM nationalaccountextras na 
-                        WHERE na.ClientID = @CurrentClientID)
-        FROM clientaccounts ca
-        WHERE ca.ClientID = @CurrentClientID;
-
-        -- Process Each RandomSectionID
-        DECLARE SectionCursor CURSOR LOCAL FAST_FORWARD FOR
-        SELECT RandomSectionID FROM #RandomSections;
-
-        OPEN SectionCursor;
-        FETCH NEXT FROM SectionCursor INTO @SectionID;
-
-        WHILE @@FETCH_STATUS = 0
-        BEGIN
-            DECLARE @ClientSecurityXML VARCHAR(1000) = NULL;
-
-            -- Client SecurityXML Logic
-            IF @ClientTypeID = 2
-            BEGIN
-                SELECT TOP 1 @ClientSecurityXML = SECURITYXML
-                FROM myescreenrandomclientsectionsettings
-                WHERE ClientID = @CurrentClientID AND ClientTypeID = 2 AND RandomSectionID = @SectionID;
-            END
-            ELSE IF @ClientTypeID = 1
-            BEGIN
-                SELECT TOP 1 @ClientSecurityXML = SECURITYXML
-                FROM myescreenrandomclientsectionsettings
-                WHERE ClientID = @CurrentClientID AND ClientTypeID = 1 AND RandomSectionID = @SectionID;
-
-                IF @ClientSecurityXML IS NULL AND @GroupID IS NOT NULL
-                BEGIN
-                    SELECT TOP 1 @ClientSecurityXML = SECURITYXML
-                    FROM myescreenrandomclientsectionsettings
-                    WHERE ClientID = @GroupID AND ClientTypeID = 1 AND RandomSectionID = @SectionID;
-                END
-            END
-            ELSE IF @ClientTypeID = 0
-            BEGIN
-                SELECT TOP 1 @ClientSecurityXML = SECURITYXML
-                FROM myescreenrandomclientsectionsettings
-                WHERE ClientID = @CurrentClientID AND ClientTypeID = 0 AND RandomSectionID = @SectionID;
-
-                IF @ClientSecurityXML IS NULL AND @MasterID IS NOT NULL
-                BEGIN
-                    SELECT TOP 1 @ClientSecurityXML = SECURITYXML
-                    FROM myescreenrandomclientsectionsettings
-                    WHERE ClientID = @MasterID AND ClientTypeID = 0 AND RandomSectionID = @SectionID;
-                END
-
-                IF @ClientSecurityXML IS NULL AND @GroupID IS NOT NULL
-                BEGIN
-                    SELECT TOP 1 @ClientSecurityXML = SECURITYXML
-                    FROM myescreenrandomclientsectionsettings
-                    WHERE ClientID = @GroupID AND ClientTypeID = 0 AND RandomSectionID = @SectionID;
-                END
-            END
-
-            INSERT INTO #ClientSecurityXML (RandomSectionID, ClientID, ClientSecurityXML)
-            VALUES (@SectionID, @CurrentClientID, @ClientSecurityXML);
-
-            FETCH NEXT FROM SectionCursor INTO @SectionID;
-        END
-
-        CLOSE SectionCursor;
-        DEALLOCATE SectionCursor;
-
-        FETCH NEXT FROM ClientCursor INTO @CurrentClientID;
-    END
-
-    CLOSE ClientCursor;
-    DEALLOCATE ClientCursor;
-
-    -- Step 5: Final Aggregation
-    SELECT
-        rs.RandomSectionID,
-        COALESCE(u.UserSecurityXML, c.ClientSecurityXML) AS FinalSecurityXML,
-        u.UserAccess
-    FROM #RandomSections rs
-    LEFT JOIN #UserSecurityXML u ON rs.RandomSectionID = u.RandomSectionID
-    LEFT JOIN (
-        SELECT RandomSectionID, MAX(ClientSecurityXML) AS ClientSecurityXML
-        FROM #ClientSecurityXML
-        GROUP BY RandomSectionID
-    ) c ON rs.RandomSectionID = c.RandomSectionID;
-
-    -- Cleanup
-    DROP TABLE #RandomSections;
-    DROP TABLE #ClientIDs;
-    DROP TABLE #UserSecurityXML;
-    DROP TABLE #ClientSecurityXML;
-END;
