@@ -1,5 +1,4 @@
  
-AS
 BEGIN
     SET NOCOUNT ON;
 
@@ -20,22 +19,17 @@ BEGIN
         SecurityXML VARCHAR(1000)
     );
 
-    -- Step 4: Process User-Level SecurityXML
+    -- Step 4: Populate User-Level SecurityXML
     INSERT INTO #SecurityXML (RandomSectionID, SecurityXML)
     SELECT
         rs.RandomSectionID,
-        COALESCE(
-            -- User-level SecurityXML
-            (SELECT TOP 1 uss.SecurityXML
-             FROM myescreenrandomusersectionsettings uss
-             WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID
-             ORDER BY uss.accessflag DESC),
-            -- Default to NULL if no user-level setting
-            NULL
-        ) AS SecurityXML
+        (SELECT TOP 1 uss.SecurityXML
+         FROM myescreenrandomusersectionsettings uss
+         WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID
+         ORDER BY uss.accessflag DESC)
     FROM #RandomSections rs;
 
-    -- Step 5: Process Client-Level SecurityXML with Grouping Logic
+    -- Step 5: Process Client-Level SecurityXML with Full Hierarchy
     DECLARE @CurrentClientID INT;
     DECLARE @SectionID INT;
     DECLARE @ClientTypeID INT;
@@ -121,7 +115,7 @@ BEGIN
                 END
             END
 
-            -- Merge SecurityXML into the final table
+            -- Update SecurityXML with Proper Null Handling
             UPDATE #SecurityXML
             SET SecurityXML = COALESCE(SecurityXML, @ClientSecurityXML)
             WHERE RandomSectionID = @SectionID;
@@ -141,7 +135,7 @@ BEGIN
     -- Step 6: Output Final SecurityXML
     SELECT
         rs.RandomSectionID,
-        sx.SecurityXML
+        COALESCE(sx.SecurityXML, NULL) AS SecurityXML
     FROM #RandomSections rs
     LEFT JOIN #SecurityXML sx ON rs.RandomSectionID = sx.RandomSectionID
     ORDER BY rs.RandomSectionID;
