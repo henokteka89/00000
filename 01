@@ -27,18 +27,23 @@ ClientHierarchy AS (
 UserSecurity AS (
     SELECT 
         rs.RandomSectionID,
-        uss.SecurityXML AS UserSecurityXML,
-        1 AS Priority -- User-level priority
+        CASE
+            WHEN uss.accessflag = 1 THEN uss.SecurityXML
+            ELSE NULL
+        END AS UserSecurityXML,
+        1 AS Priority -- Highest priority: User-level access
     FROM RandomSections rs
     LEFT JOIN myescreenrandomusersectionsettings uss
         ON rs.RandomSectionID = uss.RandomSectionID
         AND uss.UserID = @UserID
-        AND uss.accessflag = 1
 ),
 ClientSecurity AS (
     SELECT 
         rs.RandomSectionID,
-        css.SECURITYXML AS ClientSecurityXML,
+        CASE
+            WHEN css.accessflag = 1 THEN css.SECURITYXML
+            ELSE NULL
+        END AS ClientSecurityXML,
         CASE 
             WHEN css.ClientID = ch.ClientID AND css.ClientTypeID = 0 THEN 1 -- Client
             WHEN css.ClientID = ch.MasterID AND css.ClientTypeID = 0 THEN 2 -- Master
@@ -58,8 +63,8 @@ ClientSecurity AS (
 CombinedSecurity AS (
     SELECT
         RandomSectionID,
-        COALESCE(UserSecurityXML, ClientSecurityXML) AS FinalSecurityXML,
-        MIN(Priority) AS EffectivePriority -- Favor user-level security over client-level
+        COALESCE(MAX(CASE WHEN Priority = 1 THEN UserSecurityXML END), -- User-level XML
+                 MAX(CASE WHEN Priority > 1 THEN ClientSecurityXML END)) AS FinalSecurityXML -- Client-level XML
     FROM (
         SELECT RandomSectionID, UserSecurityXML, Priority FROM UserSecurity
         UNION ALL
