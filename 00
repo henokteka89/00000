@@ -1,45 +1,43 @@
  
- 
 BEGIN
     SET NOCOUNT ON;
 
-    -- Step 1: Retrieve all related ClientIDs for the given DynamicClientID
+    -- Step 1: Retrieve ClientIDs associated with the DynamicClientID
     WITH ClientIDs AS (
         SELECT ClientID
         FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID)
     ),
 
-    -- Step 2: Retrieve Random Sections (IDs 1 to 10)
+    -- Step 2: Random Sections (IDs 1 to 10)
     RandomSections AS (
-        SELECT RandomSectionID, MenuText, MenuActionV2, Description
+        SELECT RandomSectionID
         FROM randomsection
         WHERE RandomSectionID BETWEEN 1 AND 10
     ),
 
-    -- Step 3: Retrieve Client Account Details (Hierarchy)
+    -- Step 3: Client Hierarchy Information
     ClientHierarchy AS (
-        SELECT
-            c.ClientID,
+        SELECT DISTINCT
+            ca.ClientID,
             CASE
-                WHEN c.ClientSubAccount <> 0 THEN 0 -- Subclient
+                WHEN ca.ClientSubAccount <> 0 THEN 0 -- Client
                 WHEN EXISTS (
-                    SELECT 1
-                    FROM nationalaccountextras na
-                    WHERE na.GroupID = c.ClientID
+                    SELECT 1 FROM nationalaccountextras na
+                    WHERE na.GroupID = ca.ClientID
                 ) THEN 2 -- Group
                 ELSE 1 -- Master
             END AS ClientTypeID,
-            COALESCE(m.ClientID, 0) AS MasterID,
+            COALESCE(master.ClientID, 0) AS MasterID,
             COALESCE(na.GroupID, 0) AS GroupID
-        FROM clientaccounts c
-        LEFT JOIN clientaccounts m
-            ON c.ClientAccount = m.ClientAccount AND m.ClientSubAccount = 0
+        FROM clientaccounts ca
+        LEFT JOIN clientaccounts master
+            ON ca.ClientAccount = master.ClientAccount AND master.ClientSubAccount = 0
         LEFT JOIN nationalaccountextras na
-            ON c.ClientID = na.ClientID
-        WHERE c.ClientID IN (SELECT ClientID FROM ClientIDs)
+            ON ca.ClientID = na.ClientID
+        WHERE ca.ClientID IN (SELECT ClientID FROM ClientIDs)
     ),
 
-    -- Step 4: User Access Data
+    -- Step 4: User Security Data
     UserAccess AS (
         SELECT
             uss.UserID,
@@ -52,25 +50,36 @@ BEGIN
 
     -- Step 5: Client Access Data
     ClientAccess AS (
-        SELECT
+        SELECT DISTINCT
             css.ClientID,
             css.ClientTypeID,
             css.RandomSectionID,
-            css.AccessFlag AS ClientAccessFlag,
-            css.SecurityXML AS ClientSecurityXML
+            MAX(css.AccessFlag) AS ClientAccessFlag,
+            MAX(css.SecurityXML) AS ClientSecurityXML
         FROM myescreenrandomclientsectionsettings css
+        GROUP BY css.ClientID, css.ClientTypeID, css.RandomSectionID
     ),
 
-    -- Step 6: Combine Client Hierarchy and Access for All Clients and Sections
+    -- Step 6: Combine Access Data and Hierarchy
     CombinedAccess AS (
-        SELECT
+        SELECT DISTINCT
             rs.RandomSectionID,
             ch.ClientID,
             ch.ClientTypeID,
             ch.MasterID,
             ch.GroupID,
+            ua.UserAccessFlag,
+            ua.UserSecurityXML,
             ca.ClientAccessFlag,
-            ca.ClientSecurityXML
+            ca.ClientSecurityXML,
+            -- Determine Final SecurityXML Logic
+            COALESCE(
+                ua.UserSecurityXML,
+                CASE
+                    WHEN ca.ClientAccessFlag = 1 THEN ca.ClientSecurityXML
+                    WHEN ca.ClientAccessFlag = 0 THEN NULL
+                END
+            ) AS FinalSecurityXML
         FROM RandomSections rs
         CROSS JOIN ClientHierarchy ch
         LEFT JOIN ClientAccess ca
@@ -80,48 +89,30 @@ BEGIN
                 (ca.ClientID = ch.MasterID AND ca.ClientTypeID = 1) OR
                 (ca.ClientID = ch.GroupID AND ca.ClientTypeID = 2)
             )
+        LEFT JOIN UserAccess ua
+            ON rs.RandomSectionID = ua.RandomSectionID
     ),
 
-    -- Step 7: Determine Final Availability
-    FinalAvailability AS (
+    -- Step 7: Aggregate Final Results
+    AggregatedResults AS (
         SELECT
-            rs.RandomSectionID,
-            ch.ClientID,
-            ua.UserAccessFlag,
-            ua.UserSecurityXML,
-            ca.ClientAccessFlag,
-            ca.ClientSecurityXML,
-            -- Determine UserAvail
-            CASE
-                WHEN ua.UserAccessFlag = 0 THEN 0 -- User Denied
-                WHEN ca.ClientAccessFlag = 1 AND ua.UserAccessFlag = 1 THEN 1 -- Both Granted
-                ELSE 0 -- Default Denied
-            END AS UserAvail,
-            -- Determine SecurityXML based on hierarchy
-            COALESCE(
-                ua.UserSecurityXML,
-                ca.ClientSecurityXML
-            ) AS SecurityXML
-        FROM CombinedAccess ca
-        LEFT JOIN UserAccess ua
-            ON ca.RandomSectionID = ua.RandomSectionID
-        JOIN RandomSections rs
-            ON rs.RandomSectionID = ca.RandomSectionID
-        JOIN ClientHierarchy ch
-            ON ca.ClientID = ch.ClientID
+            RandomSectionID,
+            MAX(FinalSecurityXML) AS SecurityXML -- Pick the highest priority SecurityXML
+        FROM CombinedAccess
+        GROUP BY RandomSectionID
     )
 
-    -- Step 8: Final Output
-    SELECT DISTINCT
-        fa.RandomSectionID,
-        fa.ClientID,
-        fa.UserAvail,
-        fa.SecurityXML,
+    -- Final Output
+    SELECT
+        rs.RandomSectionID,
+        ar.SecurityXML,
         rs.MenuText,
         rs.MenuActionV2,
         rs.Description
-    FROM FinalAvailability fa
-    JOIN RandomSections rs
-        ON fa.RandomSectionID = rs.RandomSectionID
-    ORDER BY fa.RandomSectionID, fa.ClientID;
+    FROM AggregatedResults ar
+    JOIN randomsection rs
+        ON ar.RandomSectionID = rs.RandomSectionID
+    ORDER BY rs.RandomSectionID;
+
 END;
+GO
