@@ -3,6 +3,10 @@ WITH RandomSections AS (
     FROM randomsection
     WHERE RandomSectionID BETWEEN 1 AND 10
 ),
+ClientIDs AS (
+    SELECT ClientID
+    FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID)
+),
 ClientHierarchy AS (
     SELECT 
         ca.ClientID,
@@ -10,15 +14,15 @@ ClientHierarchy AS (
         ca.ClientSubAccount,
         CASE 
             WHEN ca.ClientSubAccount <> 0 THEN 0 -- Subclient
-            WHEN EXISTS (SELECT 1 FROM nationalaccountextras na WHERE na.GroupID = ca.ClientID) THEN 2 -- Group
+            WHEN EXISTS (SELECT 1 FROM nationalaccountextras WHERE groupid = ca.ClientID) THEN 2 -- Group
             ELSE 1 -- Master
         END AS ClientTypeID,
         COALESCE(na.GroupID, 0) AS GroupID,
         COALESCE(m.ClientID, 0) AS MasterID
     FROM clientaccounts ca
+    INNER JOIN ClientIDs c ON ca.ClientID = c.ClientID -- Process only relevant ClientIDs
     LEFT JOIN nationalaccountextras na ON na.ClientID = ca.ClientID
     LEFT JOIN clientaccounts m ON ca.ClientAccount = m.ClientAccount AND m.ClientSubAccount = 0
-    WHERE ca.ClientID = @ClientID
 )
 SELECT
     rs.RandomSectionID,
