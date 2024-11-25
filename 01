@@ -1,7 +1,4 @@
-CREATE PROCEDURE [dbo].[usp_MYEUsers_get_randomsSecurityXML_Complete]
-    @CLIENTID INT,
-    @DynamicClientID INT,
-    @UserID INT
+ 
 AS
 BEGIN
     SET NOCOUNT ON;
