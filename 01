@@ -2,23 +2,22 @@
 BEGIN
     SET NOCOUNT ON;
 
-    -- Temporary table to store results
+    -- Temporary tables
     CREATE TABLE #SecurityXMLResult (
         RandomSectionID INT PRIMARY KEY,
         SecurityXML VARCHAR(1000) NULL
     );
 
-    -- Temporary table for client IDs
     CREATE TABLE #ClientIDs (
         ClientID INT PRIMARY KEY
     );
 
-    -- Populate ClientIDs from the function
+    -- Retrieve ClientIDs associated with @DynamicClientID
     INSERT INTO #ClientIDs (ClientID)
     SELECT ClientID 
     FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
 
-    -- Iterate over RandomSectionID (1 to 10)
+    -- Iterate over each RandomSectionID (1 to 10)
     DECLARE @RandomSectionID INT = 1;
 
     WHILE @RandomSectionID <= 10
@@ -35,25 +34,26 @@ BEGIN
         FROM myescreenrandomusersectionsettings WITH (NOLOCK)
         WHERE UserID = @UserID AND RandomSectionID = @RandomSectionID;
 
+        -- If User is denied or has explicit SecurityXML
         IF @UserSectionAvail = 0
         BEGIN
             SET @FinalSecurityXML = @UserSecurityXML;
         END
-
-        IF @UserSecurityXML IS NOT NULL AND @FinalSecurityXML IS NULL
+        ELSE IF @UserSecurityXML IS NOT NULL
         BEGIN
             SET @FinalSecurityXML = @UserSecurityXML;
         END
 
-        -- Step 2: Check Client-Level Settings for All Related ClientIDs
+        -- Step 2: Check Client-Level Settings if User-level doesn't set SecurityXML
         IF @FinalSecurityXML IS NULL
         BEGIN
+            -- Cursor for each ClientID
             DECLARE ClientCursor CURSOR LOCAL FAST_FORWARD FOR
             SELECT ClientID FROM #ClientIDs;
 
             DECLARE @ClientID INT;
             DECLARE @ClientAccount INT;
-            DECLARE @ClientSubaccount INT;
+            DECLARE @ClientSubAccount INT;
             DECLARE @ClientTypeID INT;
             DECLARE @MasterID INT;
             DECLARE @GroupID INT;
@@ -66,7 +66,7 @@ BEGIN
                 -- Get Client Account Information
                 SELECT 
                     @ClientAccount = ClientAccount, 
-                    @ClientSubaccount = ClientSubAccount
+                    @ClientSubAccount = ClientSubAccount
                 FROM clientaccounts WITH (NOLOCK)
                 WHERE ClientID = @ClientID;
 
@@ -75,7 +75,7 @@ BEGIN
                 WHERE ClientID = @ClientID;
 
                 -- Determine ClientTypeID
-                IF @ClientSubaccount <> 0
+                IF @ClientSubAccount <> 0
                 BEGIN
                     SET @ClientTypeID = 0; -- Subclient
                     SELECT @MasterID = ClientID
@@ -102,7 +102,9 @@ BEGIN
                     WHERE ClientID = @ClientID AND ClientTypeID = 2 AND RandomSectionID = @RandomSectionID;
 
                     IF @ClientSecurityXML IS NOT NULL
+                    BEGIN
                         SET @FinalSecurityXML = @ClientSecurityXML;
+                    END
                 END
                 ELSE IF @ClientTypeID = 1
                 BEGIN
@@ -111,8 +113,11 @@ BEGIN
                     WHERE ClientID = @ClientID AND ClientTypeID = 1 AND RandomSectionID = @RandomSectionID;
 
                     IF @ClientSecurityXML IS NOT NULL
+                    BEGIN
                         SET @FinalSecurityXML = @ClientSecurityXML;
+                    END
 
+                    -- Check Group Level
                     IF @GroupID IS NOT NULL AND @FinalSecurityXML IS NULL
                     BEGIN
                         SELECT TOP 1 @ClientSecurityXML = SECURITYXML
@@ -120,7 +125,9 @@ BEGIN
                         WHERE ClientID = @GroupID AND ClientTypeID = 1 AND RandomSectionID = @RandomSectionID;
 
                         IF @ClientSecurityXML IS NOT NULL
+                        BEGIN
                             SET @FinalSecurityXML = @ClientSecurityXML;
+                        END
                     END
                 END
                 ELSE IF @ClientTypeID = 0
@@ -130,8 +137,11 @@ BEGIN
                     WHERE ClientID = @ClientID AND ClientTypeID = 0 AND RandomSectionID = @RandomSectionID;
 
                     IF @ClientSecurityXML IS NOT NULL
+                    BEGIN
                         SET @FinalSecurityXML = @ClientSecurityXML;
+                    END
 
+                    -- Check Master Level
                     IF @MasterID IS NOT NULL AND @FinalSecurityXML IS NULL
                     BEGIN
                         SELECT TOP 1 @ClientSecurityXML = SECURITYXML
@@ -139,9 +149,12 @@ BEGIN
                         WHERE ClientID = @MasterID AND ClientTypeID = 0 AND RandomSectionID = @RandomSectionID;
 
                         IF @ClientSecurityXML IS NOT NULL
+                        BEGIN
                             SET @FinalSecurityXML = @ClientSecurityXML;
+                        END
                     END
 
+                    -- Check Group Level
                     IF @GroupID IS NOT NULL AND @FinalSecurityXML IS NULL
                     BEGIN
                         SELECT TOP 1 @ClientSecurityXML = SECURITYXML
@@ -149,7 +162,9 @@ BEGIN
                         WHERE ClientID = @GroupID AND ClientTypeID = 0 AND RandomSectionID = @RandomSectionID;
 
                         IF @ClientSecurityXML IS NOT NULL
+                        BEGIN
                             SET @FinalSecurityXML = @ClientSecurityXML;
+                        END
                     END
                 END
 
@@ -160,7 +175,7 @@ BEGIN
             DEALLOCATE ClientCursor;
         END
 
-        -- Insert into temporary table
+        -- Insert result for current RandomSectionID
         INSERT INTO #SecurityXMLResult (RandomSectionID, SecurityXML)
         VALUES (@RandomSectionID, @FinalSecurityXML);
 
