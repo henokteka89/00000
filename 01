@@ -8,18 +8,18 @@ BEGIN
         SecurityXML VARCHAR(1000)
     );
 
-    -- Retrieve Random Sections (IDs 1 to 10)
+    -- Step 1: Retrieve Random Sections (IDs 1 to 10)
     SELECT RandomSectionID
     INTO #RandomSections
     FROM randomsection
     WHERE RandomSectionID BETWEEN 1 AND 10;
 
-    -- Retrieve ClientIDs related to the DynamicClientID
+    -- Step 2: Retrieve ClientIDs related to the DynamicClientID
     SELECT ClientID
     INTO #ClientIDs
     FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
 
-    -- Process Each RandomSectionID
+    -- Step 3: Process Each RandomSectionID with Grouping Logic
     DECLARE @SectionID INT;
     DECLARE SectionCursor CURSOR LOCAL FAST_FORWARD FOR
     SELECT RandomSectionID FROM #RandomSections;
@@ -32,28 +32,44 @@ BEGIN
         DECLARE @UserSecurityXML VARCHAR(1000) = NULL;
         DECLARE @ClientSecurityXML VARCHAR(1000) = NULL;
 
-        -- Step 1: Retrieve User-Specific SecurityXML
+        -- Step 3.1: Retrieve User-Specific SecurityXML
         SELECT TOP 1 @UserSecurityXML = uss.SecurityXML
         FROM myescreenrandomusersectionsettings uss
         WHERE uss.UserID = @UserID AND uss.RandomSectionID = @SectionID;
 
-        -- Step 2: Retrieve Client-Specific SecurityXML for All Clients
-        WITH ClientSecurity AS (
-            SELECT DISTINCT
-                css.SecurityXML
-            FROM #ClientIDs c
-            CROSS APPLY (
-                SELECT TOP 1 css.SecurityXML
-                FROM myescreenrandomclientsectionsettings css
-                WHERE css.ClientID = c.ClientID
-                AND css.RandomSectionID = @SectionID
-                ORDER BY css.ClientTypeID DESC
-            ) css
+        -- Step 3.2: Retrieve Client-Specific SecurityXML with Hierarchy Logic
+        WITH HierarchicalClients AS (
+            SELECT 
+                ca.ClientID,
+                ca.ClientAccount,
+                ca.ClientSubAccount,
+                CASE 
+                    WHEN ca.ClientSubAccount <> 0 THEN 0 -- Client
+                    WHEN EXISTS (SELECT 1 FROM nationalaccountextras na WHERE na.GroupID = ca.ClientID) THEN 2 -- Group
+                    ELSE 1 -- Master
+                END AS ClientTypeID,
+                COALESCE((SELECT TOP 1 caMaster.ClientID 
+                          FROM clientaccounts caMaster 
+                          WHERE caMaster.ClientAccount = ca.ClientAccount 
+                          AND caMaster.ClientSubAccount = 0), 0) AS MasterID,
+                COALESCE((SELECT TOP 1 na.GroupID 
+                          FROM nationalaccountextras na 
+                          WHERE na.ClientID = ca.ClientID), 0) AS GroupID
+            FROM clientaccounts ca
+            WHERE ca.ClientID IN (SELECT ClientID FROM #ClientIDs)
         )
-        SELECT TOP 1 @ClientSecurityXML = SecurityXML
-        FROM ClientSecurity;
+        SELECT TOP 1 @ClientSecurityXML = css.SecurityXML
+        FROM HierarchicalClients hc
+        CROSS APPLY (
+            SELECT TOP 1 SecurityXML
+            FROM myescreenrandomclientsectionsettings css
+            WHERE css.RandomSectionID = @SectionID
+              AND ((css.ClientID = hc.ClientID AND css.ClientTypeID = 0) -- Client Level
+                   OR (css.ClientID = hc.MasterID AND css.ClientTypeID = 1) -- Master Level
+                   OR (css.ClientID = hc.GroupID AND css.ClientTypeID = 2)) -- Group Level
+        ) css;
 
-        -- Step 3: Insert Final SecurityXML for the Section
+        -- Step 3.3: Insert Final SecurityXML
         INSERT INTO #SecurityXML (RandomSectionID, SecurityXML)
         SELECT 
             @SectionID, 
@@ -68,7 +84,7 @@ BEGIN
     CLOSE SectionCursor;
     DEALLOCATE SectionCursor;
 
-    -- Final Output
+    -- Step 4: Return Final Result
     SELECT rs.RandomSectionID, sx.SecurityXML
     FROM #RandomSections rs
     LEFT JOIN #SecurityXML sx ON rs.RandomSectionID = sx.RandomSectionID
