@@ -2,97 +2,121 @@
 BEGIN
     SET NOCOUNT ON;
 
-    -- Temporary Table for SecurityXML
-    CREATE TABLE #SecurityXML (
-        RandomSectionID INT PRIMARY KEY,
-        SecurityXML VARCHAR(1000)
-    );
-
     -- Step 1: Retrieve Random Sections (IDs 1 to 10)
-    SELECT RandomSectionID
+    SELECT RandomSectionID, MenuText, MenuActionV2, Description
     INTO #RandomSections
     FROM randomsection
     WHERE RandomSectionID BETWEEN 1 AND 10;
 
-    -- Step 2: Retrieve ClientIDs related to the DynamicClientID
+    -- Step 2: Retrieve ClientIDs associated with @DynamicClientID
     SELECT ClientID
     INTO #ClientIDs
     FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
 
-    -- Step 3: Process Each RandomSectionID with Grouping Logic
-    DECLARE @SectionID INT;
-    DECLARE SectionCursor CURSOR LOCAL FAST_FORWARD FOR
-    SELECT RandomSectionID FROM #RandomSections;
+    -- Step 3: Initialize Availability Tables
+    CREATE TABLE #UserAvailability (
+        RandomSectionID INT PRIMARY KEY,
+        UserAvail INT,
+        SecurityXML VARCHAR(1000)
+    );
 
-    OPEN SectionCursor;
-    FETCH NEXT FROM SectionCursor INTO @SectionID;
+    CREATE TABLE #ClientAvailability (
+        RandomSectionID INT PRIMARY KEY,
+        ClientAvail INT
+    );
+
+    -- Step 4: Process User Availability
+    INSERT INTO #UserAvailability (RandomSectionID, UserAvail, SecurityXML)
+    SELECT
+        rs.RandomSectionID,
+        CASE
+            WHEN EXISTS (
+                SELECT 1 FROM myescreenrandomusersectionsettings uss
+                WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 0
+            ) THEN 0 -- Denied
+            WHEN EXISTS (
+                SELECT 1 FROM myescreenrandomusersectionsettings uss
+                WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 1
+            ) THEN 1 -- Granted
+            ELSE NULL -- No setting
+        END AS UserAvail,
+        (SELECT TOP 1 uss.SecurityXML
+         FROM myescreenrandomusersectionsettings uss
+         WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID
+         ORDER BY uss.accessflag DESC) AS SecurityXML
+    FROM #RandomSections rs;
+
+    -- Step 5: Initialize Client Availability
+    INSERT INTO #ClientAvailability (RandomSectionID, ClientAvail)
+    SELECT RandomSectionID, 0 FROM #RandomSections;
+
+    -- Step 6: Process Client Availability
+    DECLARE @CurrentClientID INT;
+    DECLARE @SectionID INT;
+
+    DECLARE ClientCursor CURSOR LOCAL FAST_FORWARD FOR
+    SELECT ClientID FROM #ClientIDs;
+
+    OPEN ClientCursor;
+    FETCH NEXT FROM ClientCursor INTO @CurrentClientID;
 
     WHILE @@FETCH_STATUS = 0
     BEGIN
-        DECLARE @UserSecurityXML VARCHAR(1000) = NULL;
-        DECLARE @ClientSecurityXML VARCHAR(1000) = NULL;
+        -- Process Each RandomSectionID
+        DECLARE SectionCursor CURSOR LOCAL FAST_FORWARD FOR
+        SELECT RandomSectionID FROM #RandomSections;
 
-        -- Step 3.1: Retrieve User-Specific SecurityXML
-        SELECT TOP 1 @UserSecurityXML = uss.SecurityXML
-        FROM myescreenrandomusersectionsettings uss
-        WHERE uss.UserID = @UserID AND uss.RandomSectionID = @SectionID;
-
-        -- Step 3.2: Retrieve Client-Specific SecurityXML with Hierarchy Logic
-        WITH HierarchicalClients AS (
-            SELECT 
-                ca.ClientID,
-                ca.ClientAccount,
-                ca.ClientSubAccount,
-                CASE 
-                    WHEN ca.ClientSubAccount <> 0 THEN 0 -- Client
-                    WHEN EXISTS (SELECT 1 FROM nationalaccountextras na WHERE na.GroupID = ca.ClientID) THEN 2 -- Group
-                    ELSE 1 -- Master
-                END AS ClientTypeID,
-                COALESCE((SELECT TOP 1 caMaster.ClientID 
-                          FROM clientaccounts caMaster 
-                          WHERE caMaster.ClientAccount = ca.ClientAccount 
-                          AND caMaster.ClientSubAccount = 0), 0) AS MasterID,
-                COALESCE((SELECT TOP 1 na.GroupID 
-                          FROM nationalaccountextras na 
-                          WHERE na.ClientID = ca.ClientID), 0) AS GroupID
-            FROM clientaccounts ca
-            WHERE ca.ClientID IN (SELECT ClientID FROM #ClientIDs)
-        )
-        SELECT TOP 1 @ClientSecurityXML = css.SecurityXML
-        FROM HierarchicalClients hc
-        CROSS APPLY (
-            SELECT TOP 1 SecurityXML
-            FROM myescreenrandomclientsectionsettings css
-            WHERE css.RandomSectionID = @SectionID
-              AND ((css.ClientID = hc.ClientID AND css.ClientTypeID = 0) -- Client Level
-                   OR (css.ClientID = hc.MasterID AND css.ClientTypeID = 1) -- Master Level
-                   OR (css.ClientID = hc.GroupID AND css.ClientTypeID = 2)) -- Group Level
-        ) css;
-
-        -- Step 3.3: Insert Final SecurityXML
-        INSERT INTO #SecurityXML (RandomSectionID, SecurityXML)
-        SELECT 
-            @SectionID, 
-            COALESCE(@UserSecurityXML, @ClientSecurityXML)
-        WHERE NOT EXISTS (
-            SELECT 1 FROM #SecurityXML WHERE RandomSectionID = @SectionID
-        );
-
+        OPEN SectionCursor;
         FETCH NEXT FROM SectionCursor INTO @SectionID;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            DECLARE @ClientAvail INT = NULL;
+
+            -- Check hierarchy levels
+            EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail 
+                @ClientID = @CurrentClientID,
+                @SectionID = @SectionID,
+                @Avail = @ClientAvail OUTPUT;
+
+            -- Update Client Availability
+            IF @ClientAvail = 1
+            BEGIN
+                UPDATE #ClientAvailability
+                SET ClientAvail = 1
+                WHERE RandomSectionID = @SectionID;
+            END
+
+            FETCH NEXT FROM SectionCursor INTO @SectionID;
+        END
+
+        CLOSE SectionCursor;
+        DEALLOCATE SectionCursor;
+
+        FETCH NEXT FROM ClientCursor INTO @CurrentClientID;
     END
 
-    CLOSE SectionCursor;
-    DEALLOCATE SectionCursor;
+    CLOSE ClientCursor;
+    DEALLOCATE ClientCursor;
 
-    -- Step 4: Return Final Result
-    SELECT rs.RandomSectionID, sx.SecurityXML
+    -- Step 7: Merge Availability Results
+    SELECT
+        rs.RandomSectionID,
+        ca.ClientAvail,
+        ua.UserAvail,
+        ua.SecurityXML,
+        rs.MenuText,
+        rs.MenuActionV2,
+        rs.Description
     FROM #RandomSections rs
-    LEFT JOIN #SecurityXML sx ON rs.RandomSectionID = sx.RandomSectionID
+    LEFT JOIN #UserAvailability ua ON rs.RandomSectionID = ua.RandomSectionID
+    LEFT JOIN #ClientAvailability ca ON rs.RandomSectionID = ca.RandomSectionID
     ORDER BY rs.RandomSectionID;
 
     -- Cleanup
     DROP TABLE #RandomSections;
     DROP TABLE #ClientIDs;
-    DROP TABLE #SecurityXML;
+    DROP TABLE #UserAvailability;
+    DROP TABLE #ClientAvailability;
 END;
 GO
