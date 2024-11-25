@@ -28,7 +28,7 @@ BEGIN
     DECLARE @GroupID INT;
 
     DECLARE ClientCursor CURSOR LOCAL FAST_FORWARD FOR
-    SELECT ClientID FROM #ClientIDs;
+    SELECT DISTINCT ClientID FROM #ClientIDs;
 
     OPEN ClientCursor;
     FETCH NEXT FROM ClientCursor INTO @CurrentClientID;
@@ -146,8 +146,11 @@ BEGIN
             END
 
             -- Final SecurityXML for the Section
-            INSERT INTO #SecurityXML (RandomSectionID, SecurityXML)
-            VALUES (@SectionID, COALESCE(@UserSecurityXML, @ClientSecurityXML));
+            IF NOT EXISTS (SELECT 1 FROM #SecurityXML WHERE RandomSectionID = @SectionID)
+            BEGIN
+                INSERT INTO #SecurityXML (RandomSectionID, SecurityXML)
+                VALUES (@SectionID, COALESCE(@UserSecurityXML, @ClientSecurityXML));
+            END
 
             FETCH NEXT FROM SectionCursor INTO @SectionID;
         END
