@@ -5,6 +5,7 @@ BEGIN
     -- Table variables to hold section availability information
     DECLARE @UserSectionAvailTable TABLE (SectionID INT, Avail BIT, SecurityXML VARCHAR(1000));
     DECLARE @ClientSectionAvailTable TABLE (SectionID INT, Avail BIT);
+    DECLARE @FinalResults TABLE (ClientAvail BIT, UserAvail BIT, SecurityXML VARCHAR(1000), menutext NVARCHAR(255), menuactionv2 NVARCHAR(255), randomsectionid INT, description NVARCHAR(255));
 
     -- Initialize availability tables with all sections set to unavailable
     INSERT INTO @UserSectionAvailTable (SectionID, Avail, SecurityXML)
@@ -138,18 +139,30 @@ BEGIN
         DEALLOCATE Client_Cursor;
     END;
 
-    -- Select the final results
+    -- Populate final results
+    INSERT INTO @FinalResults (ClientAvail, UserAvail, SecurityXML, menutext, menuactionv2, randomsectionid, description)
     SELECT 
-        CASE WHEN MAX(CAST(cs.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS ClientAvail,
-        CASE WHEN MAX(CAST(us.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS UserAvail,
-        CASE WHEN MAX(us.Avail) = 0 THEN NULL ELSE ISNULL(MAX(us.SecurityXML), '') END AS SecurityXML,
+        C.Avail, 
+        U.Avail,
+        CASE WHEN U.Avail = 0 THEN NULL ELSE U.SecurityXML END,
         rs.menutext,
         rs.menuactionv2,
         rs.randomsectionid,
         rs.description
-    FROM randomsection rs WITH (NOLOCK)
-    LEFT JOIN @UserSectionAvailTable us ON rs.randomsectionid = us.SectionID
-    LEFT JOIN @ClientSectionAvailTable cs ON rs.randomsectionid = cs.SectionID
-    GROUP BY rs.menutext, rs.menuactionv2, rs.randomsectionid, rs.description
-    ORDER BY rs.randomsectionid;
+    FROM 
+        randomsection rs WITH (NOLOCK)
+    LEFT JOIN @UserSectionAvailTable U ON rs.randomsectionid = U.SectionID
+    LEFT JOIN @ClientSectionAvailTable C ON rs.randomsectionid = C.SectionID;
+
+    -- Select the final results
+    SELECT 
+        ClientAvail,
+        UserAvail,
+        SecurityXML,
+        menutext,
+        menuactionv2,
+        randomsectionid,
+        description
+    FROM @FinalResults
+    ORDER BY randomsectionid;
 END;
