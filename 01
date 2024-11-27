@@ -1,4 +1,8 @@
- 
+CREATE PROCEDURE [dbo].[usp_MyeUsers_get_randomsSubmenu]
+    @CLIENTID INT,
+    @DynamicClientID INT,
+    @UserID INT
+AS
 BEGIN
     SET NOCOUNT ON;
 
@@ -34,7 +38,7 @@ BEGIN
             UPDATE U
             SET 
                 Avail = UA.Avail,
-                SecurityXML = CASE WHEN UA.UserSecurityXML IS NULL OR UA.UserSecurityXML = '' THEN NULL ELSE UA.UserSecurityXML END
+                SecurityXML = CASE WHEN UA.UserSecurityXML IS NOT NULL THEN UA.UserSecurityXML ELSE U.SecurityXML END
             FROM @UserSectionAvailTable U
             CROSS APPLY (
                 SELECT 
@@ -142,7 +146,7 @@ BEGIN
     SELECT 
         CASE WHEN MAX(CAST(cs.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS ClientAvail,
         CASE WHEN MAX(CAST(us.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS UserAvail,
-        CASE WHEN MAX(us.Avail) = 0 THEN NULL ELSE MAX(us.SecurityXML) END AS SecurityXML,
+        CASE WHEN MAX(us.Avail) = 0 THEN NULL ELSE ISNULL(MAX(us.SecurityXML), '') END AS SecurityXML,
         rs.menutext,
         rs.menuactionv2,
         rs.randomsectionid,
