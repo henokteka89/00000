@@ -3,6 +3,116 @@ DECLARE @DynamicClientID INT = -- Your DynamicClientID
 
 -- Step 1: Retrieve All ClientIDs
 DECLARE @ClientIDs TABLE (ClientID INT PRIMARY KEY);
+INSERT INTO @ClientIDs (ClientID)
+SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+-- Step 2: Prepare SectionIDs
+DECLARE @SectionIDs TABLE (SectionID INT PRIMARY KEY);
+INSERT INTO @SectionIDs (SectionID)
+SELECT randomsectionid FROM randomsection WHERE randomsectionid BETWEEN 1 AND 10;
+
+-- Step 3: Retrieve User Settings
+WITH UserSettings AS (
+    SELECT
+        randomsectionid AS SectionID,
+        accessflag AS UserAccessFlag,
+        SecurityXML AS UserSecurityXML
+    FROM myescreenrandomusersectionsettings
+    WHERE userid = @UserID
+),
+ClientInfo AS (
+    SELECT
+        c.ClientID,
+        ca.clientaccount,
+        ca.clientsubaccount,
+        CASE
+            WHEN ca.clientsubaccount <> 0 THEN 0  -- Client
+            WHEN EXISTS (SELECT 1 FROM nationalaccountextras na WHERE na.groupid = c.ClientID) THEN 2  -- Group
+            ELSE 1  -- Master
+        END AS ClientTypeID,
+        CASE
+            WHEN ca.clientsubaccount <> 0 THEN
+                (SELECT TOP 1 clientid FROM clientaccounts WHERE clientaccount = ca.clientaccount AND clientsubaccount = 0)
+            ELSE NULL
+        END AS MasterID,
+        (SELECT groupid FROM nationalaccountextras WHERE clientid = c.ClientID) AS GroupID
+    FROM @ClientIDs c
+    JOIN clientaccounts ca ON ca.clientid = c.ClientID
+),
+ClientSettings AS (
+    SELECT
+        css.clientid,
+        css.clienttypeid,
+        css.randomsectionid AS SectionID,
+        css.accessflag AS AccessFlag,
+        css.SecurityXML AS SecurityXML
+    FROM myescreenrandomclientsectionsettings css
+    WHERE css.randomsectionid IN (SELECT SectionID FROM @SectionIDs)
+),
+Combined AS (
+    SELECT DISTINCT
+        s.SectionID,
+        us.UserAccessFlag,
+        us.UserSecurityXML,
+        ci.ClientID,
+        ci.ClientTypeID,
+        ci.MasterID,
+        ci.GroupID
+    FROM @SectionIDs s
+    LEFT JOIN UserSettings us ON us.SectionID = s.SectionID
+    CROSS JOIN ClientInfo ci
+)
+-- Step 4: Determine SecurityXML with Correct Logic
+SELECT
+    s.SectionID,
+    -- Determine SecurityXML based on the logic
+    CASE
+        WHEN us.UserAccessFlag IS NOT NULL THEN us.UserSecurityXML
+        WHEN us.UserSecurityXML IS NOT NULL THEN us.UserSecurityXML
+        ELSE
+            -- Proceed to client settings only if UserAccessFlag is NULL
+            (
+                SELECT TOP 1 css.SecurityXML
+                FROM ClientSettings css
+                WHERE css.clientid = ci.ClientID AND css.clienttypeid = ci.ClientTypeID AND css.SectionID = s.SectionID
+                    AND css.SecurityXML IS NOT NULL
+            )
+    END AS SecurityXML
+FROM
+    @SectionIDs s
+    LEFT JOIN UserSettings us ON us.SectionID = s.SectionID
+    CROSS JOIN ClientInfo ci
+ORDER BY s.SectionID;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+DECLARE @UserID INT = 1340;  -- Your UserID
+DECLARE @DynamicClientID INT = -- Your DynamicClientID
+
+-- Step 1: Retrieve All ClientIDs
+DECLARE @ClientIDs TABLE (ClientID INT PRIMARY KEY);
 
 INSERT INTO @ClientIDs (ClientID)
 SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
