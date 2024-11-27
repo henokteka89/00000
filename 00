@@ -16,152 +16,152 @@ BEGIN
     CREATE TABLE #Results (
         SectionID INT PRIMARY KEY,
         UserAvail INT,
-        ClientAvail INT,
         SecurityXML VARCHAR(1000)
     );
 
-    -- Step 4: Iterate Over Sections
+    -- Step 4: Process Each Section
     DECLARE @SectionID INT;
-    DECLARE section_cursor CURSOR LOCAL FAST_FORWARD FOR SELECT SectionID FROM @SectionIDs;
+
+    DECLARE section_cursor CURSOR LOCAL FAST_FORWARD FOR
+    SELECT SectionID FROM @SectionIDs;
+
     OPEN section_cursor;
     FETCH NEXT FROM section_cursor INTO @SectionID;
+
     WHILE @@FETCH_STATUS = 0
     BEGIN
-        DECLARE @UserAvail INT = NULL;
-        DECLARE @ClientAvail INT = NULL;
+        DECLARE @Avail INT = NULL;
         DECLARE @SecurityXML VARCHAR(1000) = NULL;
-        DECLARE @HighestPriority INT = 100;  -- Initialize with a high value
+        DECLARE @ExitLoop BIT = 0;
 
-        -- Iterate Over ClientIDs
+        -- Step 4.1: Check User Settings
+        SELECT
+            @Avail = accessflag,
+            @SecurityXML = SecurityXML
+        FROM myescreenrandomusersectionsettings
+        WHERE userid = @UserID AND randomsectionid = @SectionID;
+
+        IF @Avail = 0
+        BEGIN
+            -- User explicitly denied access
+            SET @Avail = 0;
+            SET @ExitLoop = 1;
+        END
+        ELSE IF @Avail = 1
+        BEGIN
+            -- User explicitly granted access
+            SET @Avail = 1;
+            SET @ExitLoop = 1;
+        END
+        ELSE
+        BEGIN
+            -- If SecurityXML is not NULL, set it
+            IF @SecurityXML IS NOT NULL
+                SET @SecurityXML = @SecurityXML;
+        END
+
+        IF @ExitLoop = 1
+        BEGIN
+            -- Insert into results and proceed to next section
+            INSERT INTO #Results (SectionID, UserAvail, SecurityXML)
+            VALUES (@SectionID, ISNULL(@Avail, 0), @SecurityXML);
+
+            FETCH NEXT FROM section_cursor INTO @SectionID;
+            CONTINUE;
+        END
+
+        -- Step 4.2: Iterate Over ClientIDs
         DECLARE @ClientID INT;
         DECLARE client_cursor CURSOR LOCAL FAST_FORWARD FOR SELECT ClientID FROM @ClientIDs;
+
         OPEN client_cursor;
         FETCH NEXT FROM client_cursor INTO @ClientID;
-        WHILE @@FETCH_STATUS = 0
+
+        WHILE @@FETCH_STATUS = 0 AND @ExitLoop = 0
         BEGIN
-            DECLARE @TempUserAvail INT = NULL;
-            DECLARE @TempSecurityXML VARCHAR(1000) = NULL;
             DECLARE @ClientTypeID INT = NULL;
             DECLARE @MasterID INT = NULL;
             DECLARE @GroupID INT = NULL;
+            DECLARE @ClientAvail INT = NULL;
 
-            -- Get Client Type and Related IDs
+            -- Determine Client Type and IDs
             SELECT
-                ca.clientaccount,
-                ca.clientsubaccount,
-                CASE
+                @ClientTypeID = CASE
                     WHEN ca.clientsubaccount <> 0 THEN 0  -- Client
                     WHEN EXISTS (SELECT 1 FROM nationalaccountextras na WHERE na.groupid = @ClientID) THEN 2  -- Group
                     ELSE 1  -- Master
-                END AS ClientTypeID,
-                CASE
+                END,
+                @MasterID = CASE
                     WHEN ca.clientsubaccount <> 0 THEN
-                        (SELECT TOP 1 clientid FROM clientaccounts WHERE clientaccount = ca.clientaccount AND clientsubaccount = 0)
+                        (SELECT clientid FROM clientaccounts WHERE clientaccount = ca.clientaccount AND clientsubaccount = 0)
                     ELSE NULL
-                END AS MasterID,
-                (SELECT groupid FROM nationalaccountextras WHERE clientid = @ClientID) AS GroupID
-            INTO
-                @ClientTypeID,
-                @MasterID,
-                @GroupID
+                END,
+                @GroupID = (SELECT groupid FROM nationalaccountextras WHERE clientid = @ClientID)
             FROM clientaccounts ca
             WHERE ca.clientid = @ClientID;
 
-            -- Call User Random Section Availability Stored Procedure
-            EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail
-                @ClientID = @ClientID,
-                @UserID = @UserID,
-                @SectionID = @SectionID,
-                @Avail = @TempUserAvail OUTPUT,
-                @SecurityXML = @TempSecurityXML OUTPUT;
+            -- Step 4.2.1: Check Client Settings
+            SELECT
+                @ClientAvail = accessflag,
+                @SecurityXML = CASE WHEN @SecurityXML IS NULL THEN SECURITYXML ELSE @SecurityXML END
+            FROM myescreenrandomclientsectionsettings
+            WHERE clientid = @ClientID AND clienttypeid = @ClientTypeID AND randomsectionid = @SectionID;
 
-            -- Update UserAvail and SecurityXML according to logic
-            IF @TempUserAvail = 0
+            IF @ClientAvail IS NOT NULL
             BEGIN
-                SET @UserAvail = 0;
-                IF @HighestPriority > 1
-                BEGIN
-                    SET @SecurityXML = @TempSecurityXML;  -- User denied access; highest priority
-                    SET @HighestPriority = 1;
-                END
-                -- No need to check further clients for this section
-                BREAK;
+                SET @Avail = @ClientAvail;
+                SET @ExitLoop = 1;
             END
-            ELSE
-            BEGIN
-                IF @TempUserAvail = 1 AND @UserAvail IS NULL
-                    SET @UserAvail = 1;
 
-                IF @TempSecurityXML IS NOT NULL AND @HighestPriority > 1
+            -- Step 4.2.2: Check Master Settings
+            IF @MasterID IS NOT NULL AND @Avail IS NULL
+            BEGIN
+                SELECT
+                    @ClientAvail = accessflag,
+                    @SecurityXML = CASE WHEN @SecurityXML IS NULL THEN SECURITYXML ELSE @SecurityXML END
+                FROM myescreenrandomclientsectionsettings
+                WHERE clientid = @MasterID AND clienttypeid = 1 AND randomsectionid = @SectionID;
+
+                IF @ClientAvail IS NOT NULL
                 BEGIN
-                    SET @SecurityXML = @TempSecurityXML;  -- User's SecurityXML
-                    SET @HighestPriority = 1;
+                    SET @Avail = @ClientAvail;
+                    SET @ExitLoop = 1;
                 END
             END
 
-            -- If UserAvail is not 0, check Client, Master, and Group for SecurityXML
-            IF @UserAvail <> 0
+            -- Step 4.2.3: Check Group Settings
+            IF @GroupID IS NOT NULL AND @Avail IS NULL
             BEGIN
-                -- Check Client Settings
-                IF @HighestPriority > 2
+                SELECT
+                    @ClientAvail = accessflag,
+                    @SecurityXML = CASE WHEN @SecurityXML IS NULL THEN SECURITYXML ELSE @SecurityXML END
+                FROM myescreenrandomclientsectionsettings
+                WHERE clientid = @GroupID AND clienttypeid = 2 AND randomsectionid = @SectionID;
+
+                IF @ClientAvail IS NOT NULL
                 BEGIN
-                    SELECT TOP 1 @TempSecurityXML = SECURITYXML
-                    FROM myescreenrandomclientsectionsettings
-                    WHERE clientid = @ClientID AND clienttypeid = @ClientTypeID AND randomsectionid = @SectionID
-                        AND SECURITYXML IS NOT NULL;
-
-                    IF @TempSecurityXML IS NOT NULL
-                    BEGIN
-                        SET @SecurityXML = @TempSecurityXML;
-                        SET @HighestPriority = 2;
-                    END
-                END
-
-                -- Check Master Settings
-                IF @MasterID IS NOT NULL AND @HighestPriority > 3
-                BEGIN
-                    SELECT TOP 1 @TempSecurityXML = SECURITYXML
-                    FROM myescreenrandomclientsectionsettings
-                    WHERE clientid = @MasterID AND clienttypeid = 1 AND randomsectionid = @SectionID
-                        AND SECURITYXML IS NOT NULL;
-
-                    IF @TempSecurityXML IS NOT NULL
-                    BEGIN
-                        SET @SecurityXML = @TempSecurityXML;
-                        SET @HighestPriority = 3;
-                    END
-                END
-
-                -- Check Group Settings
-                IF @GroupID IS NOT NULL AND @HighestPriority > 4
-                BEGIN
-                    SELECT TOP 1 @TempSecurityXML = SECURITYXML
-                    FROM myescreenrandomclientsectionsettings
-                    WHERE clientid = @GroupID AND clienttypeid = 2 AND randomsectionid = @SectionID
-                        AND SECURITYXML IS NOT NULL;
-
-                    IF @TempSecurityXML IS NOT NULL
-                    BEGIN
-                        SET @SecurityXML = @TempSecurityXML;
-                        SET @HighestPriority = 4;
-                    END
+                    SET @Avail = @ClientAvail;
+                    SET @ExitLoop = 1;
                 END
             END
 
             FETCH NEXT FROM client_cursor INTO @ClientID;
         END
+
         CLOSE client_cursor;
         DEALLOCATE client_cursor;
 
-        -- Default to 0 if availability was not set
-        SET @UserAvail = ISNULL(@UserAvail, 0);
+        -- If availability not determined, default to 0
+        IF @Avail IS NULL
+            SET @Avail = 0;
 
         -- Insert into results
-        INSERT INTO #Results (SectionID, UserAvail, ClientAvail, SecurityXML)
-        VALUES (@SectionID, @UserAvail, @ClientAvail, @SecurityXML);
+        INSERT INTO #Results (SectionID, UserAvail, SecurityXML)
+        VALUES (@SectionID, @Avail, @SecurityXML);
 
         FETCH NEXT FROM section_cursor INTO @SectionID;
     END
+
     CLOSE section_cursor;
     DEALLOCATE section_cursor;
 
@@ -169,145 +169,7 @@ BEGIN
     SELECT
         rs.randomsectionid AS RandomSectionID,
         r.UserAvail,
-        r.ClientAvail,
-        r.SecurityXML,
-        rs.menutext AS MenuText,
-        rs.menuactionv2 AS MenuActionV2,
-        rs.description AS Description
-    FROM randomsection rs
-    LEFT JOIN #Results r ON r.SectionID = rs.randomsectionid
-    WHERE rs.randomsectionid BETWEEN 1 AND 10
-    ORDER BY rs.randomsectionid;
-
-    -- Clean up temporary table
-    DROP TABLE #Results;
-END;
-GO
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-BEGIN
-    SET NOCOUNT ON;
-
-    -- Step 1: Retrieve All ClientIDs
-    DECLARE @ClientIDs TABLE (ClientID INT PRIMARY KEY);
-    INSERT INTO @ClientIDs (ClientID)
-    SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
-
-    -- Step 2: Prepare SectionIDs
-    DECLARE @SectionIDs TABLE (SectionID INT PRIMARY KEY);
-    INSERT INTO @SectionIDs (SectionID)
-    SELECT randomsectionid FROM randomsection WHERE randomsectionid BETWEEN 1 AND 10;
-
-    -- Step 3: Prepare Temporary Table for Results
-    CREATE TABLE #Results (
-        SectionID INT PRIMARY KEY,
-        UserAvail INT,
-        ClientAvail INT,
-        SecurityXML VARCHAR(1000)
-    );
-
-    -- Step 4: Iterate Over Sections
-    DECLARE @SectionID INT;
-    DECLARE section_cursor CURSOR LOCAL FAST_FORWARD FOR SELECT SectionID FROM @SectionIDs;
-    OPEN section_cursor;
-    FETCH NEXT FROM section_cursor INTO @SectionID;
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        DECLARE @UserAvail INT = NULL;
-        DECLARE @ClientAvail INT = NULL;
-        DECLARE @SecurityXML VARCHAR(1000) = NULL;
-
-        -- Iterate Over ClientIDs
-        DECLARE client_cursor CURSOR LOCAL FAST_FORWARD FOR SELECT ClientID FROM @ClientIDs;
-        OPEN client_cursor;
-        FETCH NEXT FROM client_cursor INTO @ClientID;  -- Corrected: @ClientID declared only here
-        WHILE @@FETCH_STATUS = 0
-        BEGIN
-            DECLARE @TempUserAvail INT = NULL;
-            DECLARE @TempClientAvail INT = NULL;
-            DECLARE @TempSecurityXML VARCHAR(1000) = NULL;
-
-            -- Call User Random Section Availability Stored Procedure
-            EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail
-                @ClientID = @ClientID,
-                @UserID = @UserID,
-                @SectionID = @SectionID,
-                @Avail = @TempUserAvail OUTPUT,
-                @SecurityXML = @TempSecurityXML OUTPUT;
-
-            -- Update UserAvail and SecurityXML according to logic
-            IF @TempUserAvail = 0
-            BEGIN
-                SET @UserAvail = 0;
-                SET @SecurityXML = @TempSecurityXML;  -- SecurityXML should be set when user is denied
-                -- No need to check further clients for this section
-                BREAK;
-            END
-            ELSE IF @TempUserAvail = 1
-            BEGIN
-                SET @UserAvail = 1;
-                IF @SecurityXML IS NULL AND @TempSecurityXML IS NOT NULL
-                    SET @SecurityXML = @TempSecurityXML;  -- Set SecurityXML if not already set
-            END
-            ELSE
-            BEGIN
-                IF @SecurityXML IS NULL AND @TempSecurityXML IS NOT NULL
-                    SET @SecurityXML = @TempSecurityXML;
-            END
-
-            -- Call Client Random Section Availability Stored Procedure
-            EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail
-                @ClientID = @ClientID,
-                @SectionID = @SectionID,
-                @Avail = @TempClientAvail OUTPUT;
-
-            -- Update ClientAvail
-            IF @TempClientAvail = 1
-                SET @ClientAvail = 1;
-
-            FETCH NEXT FROM client_cursor INTO @ClientID;
-        END
-        CLOSE client_cursor;
-        DEALLOCATE client_cursor;
-
-        -- Default to 0 if availability was not set
-        SET @UserAvail = ISNULL(@UserAvail, 0);
-        SET @ClientAvail = ISNULL(@ClientAvail, 0);
-
-        -- Insert into results
-        INSERT INTO #Results (SectionID, UserAvail, ClientAvail, SecurityXML)
-        VALUES (@SectionID, @UserAvail, @ClientAvail, @SecurityXML);
-
-        FETCH NEXT FROM section_cursor INTO @SectionID;
-    END
-    CLOSE section_cursor;
-    DEALLOCATE section_cursor;
-
-    -- Step 5: Generate Final Output
-    SELECT
-        rs.randomsectionid AS RandomSectionID,
-        r.UserAvail,
-        r.ClientAvail,
+        r.UserAvail AS ClientAvail,  -- Assuming UserAvail includes client availability
         r.SecurityXML,
         rs.menutext AS MenuText,
         rs.menuactionv2 AS MenuActionV2,
