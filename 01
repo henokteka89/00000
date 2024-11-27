@@ -23,6 +23,7 @@ BEGIN
         SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
 
         DECLARE @DCC_ClientID INT;
+        DECLARE @ClientAccount INT;
         DECLARE Client_Cursor CURSOR FOR SELECT ClientID FROM @ClientIDs;
         OPEN Client_Cursor;
         FETCH NEXT FROM Client_Cursor INTO @DCC_ClientID;
