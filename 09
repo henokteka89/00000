@@ -1,4 +1,3 @@
- 
 CREATE FUNCTION [dbo].[fn_GetUserRandomSectionAvail]
 (
     @ClientID INT,
@@ -19,10 +18,12 @@ RETURN
                 WHEN EXISTS (SELECT 1 FROM nationalaccountextras WHERE groupid = @ClientID) THEN 2
                 ELSE 1
             END AS ClientTypeID,
-            (SELECT clientid FROM clientaccounts WHERE clientaccount = clientaccounts.clientaccount AND clientsubaccount = 0) AS MasterID,
-            (SELECT groupid FROM nationalaccountextras WHERE clientid = @ClientID) AS GroupID
-        FROM clientaccounts
-        WHERE clientid = @ClientID
+            MA.clientid AS MasterID,
+            G.groupid AS GroupID
+        FROM clientaccounts CA
+        LEFT JOIN clientaccounts MA ON CA.clientaccount = MA.clientaccount AND MA.clientsubaccount = 0
+        LEFT JOIN nationalaccountextras G ON CA.clientid = G.clientid
+        WHERE CA.clientid = @ClientID
     ),
     UserAccess AS
     (
@@ -73,8 +74,8 @@ RETURN
             ) AS SecurityXML
         FROM UserAccess
         LEFT JOIN ClientAccess ON ClientAccess.clienttypeid = (SELECT ClientTypeID FROM ClientInfo)
-        LEFT JOIN GroupAccess ON 1 = 1 -- Always join as we need the GroupAccess for comparison
-        LEFT JOIN MasterAccess ON 1 = 1 -- Always join as we need the MasterAccess for comparison
+        LEFT JOIN GroupAccess ON GroupAccess.GroupSectionAvail IS NOT NULL
+        LEFT JOIN MasterAccess ON MasterAccess.MasterSectionAvail IS NOT NULL
     )
     SELECT 
         CASE 
