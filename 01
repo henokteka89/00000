@@ -34,10 +34,7 @@ BEGIN
             UPDATE U
             SET 
                 Avail = UA.Avail,
-                SecurityXML = CASE 
-                                WHEN UA.Avail = 1 THEN ISNULL(UA.UserSecurityXML, U.SecurityXML)
-                                ELSE NULL 
-                              END
+                SecurityXML = ISNULL(UA.UserSecurityXML, U.SecurityXML)
             FROM @UserSectionAvailTable U
             CROSS APPLY (
                 SELECT 
@@ -145,7 +142,7 @@ BEGIN
     SELECT 
         CASE WHEN MAX(CAST(cs.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS ClientAvail,
         CASE WHEN MAX(CAST(us.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS UserAvail,
-        COALESCE(MAX(CASE WHEN us.Avail = 1 THEN us.SecurityXML ELSE NULL END), NULL) AS SecurityXML,
+        COALESCE(MAX(us.SecurityXML), NULL) AS SecurityXML,
         rs.menutext,
         rs.menuactionv2,
         rs.randomsectionid,
@@ -156,6 +153,8 @@ BEGIN
     GROUP BY rs.menutext, rs.menuactionv2, rs.randomsectionid, rs.description
     ORDER BY rs.randomsectionid;
 END;
+ 
+ 
 
 
 
