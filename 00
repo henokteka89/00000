@@ -30,21 +30,16 @@ BEGIN
         DECLARE @UserAvail INT = NULL;
         DECLARE @ClientAvail INT = NULL;
         DECLARE @SecurityXML VARCHAR(1000) = NULL;
-        DECLARE @TempUserAvail INT = NULL;
-        DECLARE @TempClientAvail INT = NULL;
-        DECLARE @TempSecurityXML VARCHAR(1000) = NULL;
 
         -- Iterate Over ClientIDs
-        DECLARE @ClientID INT;
         DECLARE client_cursor CURSOR LOCAL FAST_FORWARD FOR SELECT ClientID FROM @ClientIDs;
         OPEN client_cursor;
-        FETCH NEXT FROM client_cursor INTO @ClientID;
+        FETCH NEXT FROM client_cursor INTO @ClientID;  -- Corrected: @ClientID declared only here
         WHILE @@FETCH_STATUS = 0
         BEGIN
-            -- Reset temporary variables for each client
-            SET @TempUserAvail = NULL;
-            SET @TempClientAvail = NULL;
-            SET @TempSecurityXML = NULL;
+            DECLARE @TempUserAvail INT = NULL;
+            DECLARE @TempClientAvail INT = NULL;
+            DECLARE @TempSecurityXML VARCHAR(1000) = NULL;
 
             -- Call User Random Section Availability Stored Procedure
             EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail
