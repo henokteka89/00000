@@ -1,1 +1,123 @@
 
+ 
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Step 1: Retrieve All ClientIDs
+    DECLARE @ClientIDs TABLE (ClientID INT PRIMARY KEY);
+
+    INSERT INTO @ClientIDs (ClientID)
+    SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+    -- Step 2: Prepare SectionIDs
+    DECLARE @SectionIDs TABLE (SectionID INT PRIMARY KEY);
+
+    INSERT INTO @SectionIDs (SectionID)
+    SELECT randomsectionid FROM randomsection WITH (NOLOCK)
+    WHERE randomsectionid BETWEEN 1 AND 10;
+
+    -- Step 3: Gather Client Information
+    WITH ClientInfo AS
+    (
+        SELECT
+            c.ClientID,
+            ca.clientaccount,
+            ca.clientsubaccount,
+            CASE
+                WHEN ca.clientsubaccount <> 0 THEN 0  -- Client
+                WHEN EXISTS (SELECT 1 FROM nationalaccountextras na WHERE na.groupid = c.ClientID) THEN 2  -- Group
+                ELSE 1  -- Master
+            END AS ClientTypeID,
+            CASE
+                WHEN ca.clientsubaccount <> 0 THEN
+                    (SELECT TOP 1 clientid FROM clientaccounts WHERE clientaccount = ca.clientaccount AND clientsubaccount = 0)  -- MasterID
+            END AS MasterID,
+            (SELECT groupid FROM nationalaccountextras WHERE clientid = c.ClientID) AS GroupID
+        FROM @ClientIDs c
+        JOIN clientaccounts ca ON ca.clientid = c.ClientID
+    ),
+    UserSettings AS
+    (
+        SELECT
+            uss.randomsectionid AS SectionID,
+            uss.accessflag AS UserSectionAvail,
+            uss.SecurityXML AS UserSecurityXML
+        FROM myescreenrandomusersectionsettings uss
+        WHERE uss.userid = @UserID
+    ),
+    ClientSettings AS
+    (
+        SELECT
+            css.clientid,
+            css.clienttypeid,
+            css.randomsectionid AS SectionID,
+            css.accessflag AS ClientSectionAvail,
+            css.SECURITYXML AS ClientSecurityXML
+        FROM myescreenrandomclientsectionsettings css
+    ),
+    Combined AS
+    (
+        SELECT DISTINCT
+            ci.ClientID,
+            s.SectionID,
+            ci.clientaccount,
+            ci.clientsubaccount,
+            ci.ClientTypeID,
+            ci.MasterID,
+            ci.GroupID,
+            us.UserSectionAvail,
+            us.UserSecurityXML
+        FROM ClientInfo ci
+        CROSS JOIN @SectionIDs s
+        LEFT JOIN UserSettings us ON us.SectionID = s.SectionID
+    ),
+    Availability AS
+    (
+        SELECT
+            c.SectionID,
+            -- Determine UserAvail
+            CASE
+                WHEN us.UserSectionAvail = 0 THEN 0  -- User explicitly denied access
+                ELSE
+                    CASE
+                        WHEN MAX(CASE WHEN cs.ClientSectionAvail = 1 THEN 1 END) = 1 THEN 1  -- Client grants access
+                        WHEN MAX(CASE WHEN ms.ClientSectionAvail = 1 THEN 1 END) = 1 THEN 1  -- Master grants access
+                        WHEN MAX(CASE WHEN gs.ClientSectionAvail = 1 THEN 1 END) = 1 THEN 1  -- Group grants access
+                        ELSE 0  -- No access found
+                    END
+            END AS UserAvail,
+            -- Determine ClientAvail
+            CASE
+                WHEN MAX(CASE WHEN cs.ClientSectionAvail = 1 THEN 1 END) = 1 THEN 1
+                WHEN MAX(CASE WHEN ms.ClientSectionAvail = 1 THEN 1 END) = 1 THEN 1
+                WHEN MAX(CASE WHEN gs.ClientSectionAvail = 1 THEN 1 END) = 1 THEN 1
+                ELSE 0
+            END AS ClientAvail,
+            -- Determine SecurityXML
+            COALESCE(us.UserSecurityXML,
+                MAX(cs.ClientSecurityXML),
+                MAX(ms.ClientSecurityXML),
+                MAX(gs.ClientSecurityXML)) AS SecurityXML
+        FROM Combined c
+        LEFT JOIN ClientSettings cs ON cs.clientid = c.ClientID AND cs.clienttypeid = c.ClientTypeID AND cs.SectionID = c.SectionID
+        LEFT JOIN ClientSettings ms ON ms.clientid = c.MasterID AND ms.clienttypeid = 1 AND ms.SectionID = c.SectionID
+        LEFT JOIN ClientSettings gs ON gs.clientid = c.GroupID AND gs.clienttypeid = 2 AND gs.SectionID = c.SectionID
+        LEFT JOIN UserSettings us ON us.SectionID = c.SectionID
+        GROUP BY c.SectionID, us.UserSectionAvail, us.UserSecurityXML
+    )
+    -- Step 4: Aggregate Results and Join with RandomSection
+    SELECT
+        rs.randomsectionid AS RandomSectionID,
+        a.UserAvail,
+        a.ClientAvail,
+        a.SecurityXML,
+        rs.menutext AS MenuText,
+        rs.menuactionv2 AS MenuActionV2,
+        rs.description AS Description
+    FROM randomsection rs
+    LEFT JOIN Availability a ON a.SectionID = rs.randomsectionid
+    WHERE rs.randomsectionid BETWEEN 1 AND 10
+    ORDER BY rs.randomsectionid;
+
+END
+GO
