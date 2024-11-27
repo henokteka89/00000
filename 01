@@ -33,13 +33,16 @@ BEGIN
             -- User section availability
             UPDATE U
             SET 
-                Avail = CASE WHEN UA.Avail = 0 THEN 0 ELSE 1 END,
-                SecurityXML = COALESCE(UA.UserSecurityXML, U.SecurityXML)
+                Avail = UA.Avail,
+                SecurityXML = COALESCE(UA.SecurityXML, U.SecurityXML)
             FROM @UserSectionAvailTable U
             CROSS APPLY (
                 SELECT 
-                    SU.accessflag AS Avail, 
-                    SU.SecurityXML AS UserSecurityXML
+                    CASE 
+                        WHEN SU.accessflag = 1 THEN 1 
+                        ELSE 0 
+                    END AS Avail, 
+                    SU.SecurityXML
                 FROM myescreenrandomusersectionsettings SU WITH (NOLOCK)
                 WHERE SU.userid = @UserID AND SU.randomsectionid = U.SectionID
             ) UA;
@@ -47,11 +50,14 @@ BEGIN
             -- Client section availability
             UPDATE C
             SET 
-                Avail = CASE WHEN CA.ClientSectionAvail = 0 THEN 0 ELSE 1 END
+                Avail = CA.Avail
             FROM @ClientSectionAvailTable C
             CROSS APPLY (
                 SELECT 
-                    SC.accessflag AS ClientSectionAvail
+                    CASE 
+                        WHEN SC.accessflag = 1 THEN 1 
+                        ELSE 0 
+                    END AS Avail
                 FROM myescreenrandomclientsectionsettings SC WITH (NOLOCK)
                 WHERE SC.clientid = @DCC_ClientID AND SC.randomsectionid = C.SectionID
             ) CA;
@@ -136,7 +142,7 @@ BEGIN
     SELECT 
         CASE WHEN MAX(CAST(cs.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS ClientAvail,
         CASE WHEN MAX(CAST(us.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS UserAvail,
-        COALESCE(MAX(us.SecurityXML), '') AS SecurityXML,
+        ISNULL(MAX(us.SecurityXML), '') AS SecurityXML,
         rs.menutext,
         rs.menuactionv2,
         rs.randomsectionid,
