@@ -1,4 +1,4 @@
-DECLARE @UserID INT = -- Your UserID
+DECLARE @UserID INT = 1340;  -- Your UserID
 DECLARE @DynamicClientID INT = -- Your DynamicClientID
 
 -- Step 1: Retrieve All ClientIDs
@@ -34,16 +34,27 @@ WITH ClientInfo AS
     FROM @ClientIDs c
     JOIN clientaccounts ca ON ca.clientid = c.ClientID
 ),
-UserSecurity AS
+Combined AS
+(
+    SELECT DISTINCT
+        s.SectionID,
+        ci.ClientID,
+        ci.ClientTypeID,
+        ci.MasterID,
+        ci.GroupID
+    FROM @SectionIDs s
+    CROSS JOIN ClientInfo ci
+),
+UserSettings AS
 (
     SELECT
         us.randomsectionid AS SectionID,
         us.accessflag AS UserAccessFlag,
         us.SecurityXML AS UserSecurityXML
     FROM myescreenrandomusersectionsettings us
-    WHERE us.userid = @UserID AND us.randomsectionid IN (SELECT SectionID FROM @SectionIDs)
+    WHERE us.userid = @UserID
 ),
-ClientSecurity AS
+ClientSettings AS
 (
     SELECT
         css.clientid,
@@ -52,107 +63,50 @@ ClientSecurity AS
         css.accessflag AS AccessFlag,
         css.SECURITYXML AS SecurityXML
     FROM myescreenrandomclientsectionsettings css
-    WHERE css.randomsectionid IN (SELECT SectionID FROM @SectionIDs)
 ),
-Combined AS
+SecurityXMLPriority AS
 (
     SELECT
-        s.SectionID,
-        ci.ClientID,
-        ci.ClientTypeID,
-        ci.MasterID,
-        ci.GroupID,
-        us.UserAccessFlag,
-        us.UserSecurityXML
-    FROM @SectionIDs s
-    CROSS JOIN ClientInfo ci
-    LEFT JOIN UserSecurity us ON us.SectionID = s.SectionID
-)
--- Step 5: Determine SecurityXML for Each SectionID
-SELECT
-    s.SectionID,
-    CASE
-        -- User Level
-        WHEN us.UserAccessFlag IS NOT NULL THEN us.UserSecurityXML
-
-        -- Client Level
-        WHEN cs_client.AccessFlag IS NOT NULL THEN
-            CASE WHEN us.UserSecurityXML IS NULL THEN cs_client.SecurityXML ELSE us.UserSecurityXML END
-
-        -- Master Level
-        WHEN cs_master.AccessFlag IS NOT NULL THEN
-            CASE WHEN us.UserSecurityXML IS NULL THEN cs_master.SecurityXML ELSE us.UserSecurityXML END
-
-        -- Group Level
-        WHEN cs_group.AccessFlag IS NOT NULL THEN
-            CASE WHEN us.UserSecurityXML IS NULL THEN cs_group.SecurityXML ELSE us.UserSecurityXML END
-
-        -- Default
-        ELSE us.UserSecurityXML
-    END AS SecurityXML
-FROM
-    @SectionIDs s
-    LEFT JOIN UserSecurity us ON us.SectionID = s.SectionID
-
+        c.SectionID,
+        -- Assign priority levels
+        ROW_NUMBER() OVER (PARTITION BY c.SectionID ORDER BY
+            CASE
+                WHEN us.UserSecurityXML IS NOT NULL THEN 1
+                WHEN cs_client.SecurityXML IS NOT NULL THEN 2
+                WHEN cs_master.SecurityXML IS NOT NULL THEN 3
+                WHEN cs_group.SecurityXML IS NOT NULL THEN 4
+                ELSE 5
+            END
+        ) AS Priority,
+        -- Coalesce SecurityXML based on priority
+        COALESCE(us.UserSecurityXML, cs_client.SecurityXML, cs_master.SecurityXML, cs_group.SecurityXML) AS SecurityXML
+    FROM Combined c
+    LEFT JOIN UserSettings us ON us.SectionID = c.SectionID
     -- Client Level
-    LEFT JOIN ClientInfo ci ON ci.ClientID IN (SELECT ClientID FROM @ClientIDs)
-    LEFT JOIN ClientSecurity cs_client ON cs_client.clientid = ci.ClientID AND cs_client.clienttypeid = ci.ClientTypeID AND cs_client.SectionID = s.SectionID
-
+    LEFT JOIN ClientSettings cs_client ON cs_client.clientid = c.ClientID AND cs_client.clienttypeid = c.ClientTypeID AND cs_client.SectionID = c.SectionID
     -- Master Level
-    LEFT JOIN ClientSecurity cs_master ON cs_master.clientid = ci.MasterID AND cs_master.clienttypeid = 1 AND cs_master.SectionID = s.SectionID
-
+    LEFT JOIN ClientSettings cs_master ON cs_master.clientid = c.MasterID AND cs_master.clienttypeid = 1 AND cs_master.SectionID = c.SectionID
     -- Group Level
-    LEFT JOIN ClientSecurity cs_group ON cs_group.clientid = ci.GroupID AND cs_group.clienttypeid = 2 AND cs_group.SectionID = s.SectionID
-
-ORDER BY s.SectionID;
-
-
--- Final Query
+    LEFT JOIN ClientSettings cs_group ON cs_group.clientid = c.GroupID AND cs_group.clienttypeid = 2 AND cs_group.SectionID = c.SectionID
+    WHERE
+        -- We need to consider rows where either UserAccessFlag is not NULL or any SecurityXML is available
+        us.UserAccessFlag IS NOT NULL
+        OR us.UserSecurityXML IS NOT NULL
+        OR cs_client.SecurityXML IS NOT NULL
+        OR cs_master.SecurityXML IS NOT NULL
+        OR cs_group.SecurityXML IS NOT NULL
+)
+-- Step 4: Select the Highest Priority SecurityXML for Each SectionID
 SELECT
     s.SectionID,
-    COALESCE(us.SecurityXML, cs_client.SecurityXML, cs_master.SecurityXML, cs_group.SecurityXML) AS SecurityXML
-FROM
-    @SectionIDs s
-    OUTER APPLY
-    (
-        -- User Level
-        SELECT TOP 1
-            uss.SecurityXML
-        FROM myescreenrandomusersectionsettings uss
-        WHERE uss.userid = @UserID AND uss.randomsectionid = s.SectionID
-        ORDER BY CASE WHEN uss.accessflag IS NOT NULL THEN 1 ELSE 2 END
-    ) us
-    OUTER APPLY
-    (
-        -- Client Level
-        SELECT TOP 1
-            css.SecurityXML
-        FROM ClientInfo ci
-        JOIN myescreenrandomclientsectionsettings css ON css.clientid = ci.ClientID AND css.clienttypeid = ci.ClientTypeID AND css.randomsectionid = s.SectionID
-        WHERE ci.ClientID IN (SELECT ClientID FROM @ClientIDs)
-        AND us.SecurityXML IS NULL  -- Only consider if UserSecurityXML is NULL
-        ORDER BY CASE WHEN css.accessflag IS NOT NULL THEN 1 ELSE 2 END
-    ) cs_client
-    OUTER APPLY
-    (
-        -- Master Level
-        SELECT TOP 1
-            css.SecurityXML
-        FROM ClientInfo ci
-        JOIN myescreenrandomclientsectionsettings css ON css.clientid = ci.MasterID AND css.clienttypeid = 1 AND css.randomsectionid = s.SectionID
-        WHERE ci.MasterID IS NOT NULL
-        AND us.SecurityXML IS NULL AND cs_client.SecurityXML IS NULL  -- Only if higher priority SecurityXML is NULL
-        ORDER BY CASE WHEN css.accessflag IS NOT NULL THEN 1 ELSE 2 END
-    ) cs_master
-    OUTER APPLY
-    (
-        -- Group Level
-        SELECT TOP 1
-            css.SecurityXML
-        FROM ClientInfo ci
-        JOIN myescreenrandomclientsectionsettings css ON css.clientid = ci.GroupID AND css.clienttypeid = 2 AND css.randomsectionid = s.SectionID
-        WHERE ci.GroupID IS NOT NULL
-        AND us.SecurityXML IS NULL AND cs_client.SecurityXML IS NULL AND cs_master.SecurityXML IS NULL  -- Only if higher priority SecurityXML is NULL
-        ORDER BY CASE WHEN css.accessflag IS NOT NULL THEN 1 ELSE 2 END
-    ) cs_group
+    sx.SecurityXML
+FROM @SectionIDs s
+OUTER APPLY
+(
+    SELECT TOP 1
+        p.SecurityXML
+    FROM SecurityXMLPriority p
+    WHERE p.SectionID = s.SectionID
+    ORDER BY p.Priority
+) sx
 ORDER BY s.SectionID;
