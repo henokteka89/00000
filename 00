@@ -1,4 +1,145 @@
- 
+DECLARE @UserID INT = -- Your UserID
+DECLARE @DynamicClientID INT = -- Your DynamicClientID
+
+-- Step 1: Retrieve All ClientIDs
+DECLARE @ClientIDs TABLE (ClientID INT PRIMARY KEY);
+
+INSERT INTO @ClientIDs (ClientID)
+SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+-- Step 2: Prepare SectionIDs
+DECLARE @SectionIDs TABLE (SectionID INT PRIMARY KEY);
+
+INSERT INTO @SectionIDs (SectionID)
+SELECT randomsectionid FROM randomsection WHERE randomsectionid BETWEEN 1 AND 10;
+
+-- Step 3: Gather Client Information
+WITH ClientInfo AS
+(
+    SELECT
+        c.ClientID,
+        ca.clientaccount,
+        ca.clientsubaccount,
+        CASE
+            WHEN ca.clientsubaccount <> 0 THEN 0  -- Client
+            WHEN EXISTS (SELECT 1 FROM nationalaccountextras na WHERE na.groupid = c.ClientID) THEN 2  -- Group
+            ELSE 1  -- Master
+        END AS ClientTypeID,
+        CASE
+            WHEN ca.clientsubaccount <> 0 THEN
+                (SELECT TOP 1 clientid FROM clientaccounts WHERE clientaccount = ca.clientaccount AND clientsubaccount = 0)
+            ELSE NULL
+        END AS MasterID,
+        (SELECT groupid FROM nationalaccountextras WHERE clientid = c.ClientID) AS GroupID
+    FROM @ClientIDs c
+    JOIN clientaccounts ca ON ca.clientid = c.ClientID
+),
+Combined AS
+(
+    SELECT DISTINCT
+        s.SectionID,
+        ci.ClientID,
+        ci.ClientTypeID,
+        ci.MasterID,
+        ci.GroupID
+    FROM @SectionIDs s
+    CROSS JOIN ClientInfo ci
+),
+-- Step 4: Retrieve User Security Settings
+UserSecurity AS
+(
+    SELECT
+        us.randomsectionid AS SectionID,
+        us.SecurityXML AS UserSecurityXML
+    FROM myescreenrandomusersectionsettings us
+    WHERE us.userid = @UserID
+),
+-- Step 5: Retrieve Client Security Settings
+ClientSecurity AS
+(
+    SELECT
+        css.clientid,
+        css.clienttypeid,
+        css.randomsectionid AS SectionID,
+        css.SECURITYXML AS ClientSecurityXML
+    FROM myescreenrandomclientsectionsettings css
+    WHERE css.randomsectionid IN (SELECT SectionID FROM @SectionIDs)
+        AND (
+            css.clientid IN (SELECT ClientID FROM ClientInfo)
+            OR css.clientid IN (SELECT MasterID FROM ClientInfo WHERE MasterID IS NOT NULL)
+            OR css.clientid IN (SELECT GroupID FROM ClientInfo WHERE GroupID IS NOT NULL)
+        )
+),
+-- Step 6: Determine SecurityXML with Priority
+SecurityXMLPriority AS
+(
+    SELECT
+        c.SectionID,
+        COALESCE(us.UserSecurityXML, cs.ClientSecurityXML) AS SecurityXML,
+        CASE
+            WHEN us.UserSecurityXML IS NOT NULL THEN 1  -- User level
+            WHEN cs.clientid = c.ClientID AND cs.clienttypeid = c.ClientTypeID AND cs.ClientSecurityXML IS NOT NULL THEN 2  -- Client level
+            WHEN cs.clientid = c.MasterID AND cs.clienttypeid = 1 AND cs.ClientSecurityXML IS NOT NULL THEN 3  -- Master level
+            WHEN cs.clientid = c.GroupID AND cs.clienttypeid = 2 AND cs.ClientSecurityXML IS NOT NULL THEN 4  -- Group level
+            ELSE 5  -- Default
+        END AS Priority
+    FROM Combined c
+    LEFT JOIN UserSecurity us ON us.SectionID = c.SectionID
+    LEFT JOIN ClientSecurity cs ON
+        cs.SectionID = c.SectionID AND
+        (
+            (cs.clientid = c.ClientID AND cs.clienttypeid = c.ClientTypeID)
+            OR (cs.clientid = c.MasterID AND cs.clienttypeid = 1)
+            OR (cs.clientid = c.GroupID AND cs.clienttypeid = 2)
+        )
+    WHERE us.UserSecurityXML IS NOT NULL OR cs.ClientSecurityXML IS NOT NULL
+),
+-- Step 7: Rank SecurityXML by Priority
+RankedSecurityXML AS
+(
+    SELECT
+        SectionID,
+        SecurityXML,
+        ROW_NUMBER() OVER (PARTITION BY SectionID ORDER BY Priority) AS rn
+    FROM SecurityXMLPriority
+)
+-- Step 8: Select the Top Priority SecurityXML for Each SectionID
+SELECT
+    s.SectionID,
+    rs.SecurityXML
+FROM @SectionIDs s
+LEFT JOIN RankedSecurityXML rs ON rs.SectionID = s.SectionID AND rs.rn = 1
+ORDER BY s.SectionID;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 BEGIN
     SET NOCOUNT ON;
 
