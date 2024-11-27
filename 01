@@ -1,1 +1,184 @@
  
+CREATE PROCEDURE [dbo].[usp_MyeUsers_get_randomsSubmenu]
+    @CLIENTID INT,
+    @DynamicClientID INT,
+    @UserID INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Temporary tables to store availability information
+    DECLARE @UserSectionAvailTable TABLE (SectionID INT, Avail BIT, XML VARCHAR(1000));
+    DECLARE @ClientSectionAvailTable TABLE (SectionID INT, Avail BIT);
+    
+    -- Initialize section availability tables
+    INSERT INTO @UserSectionAvailTable (SectionID, Avail, XML)
+    VALUES (1, 0, ''), (2, 0, ''), (3, 0, ''), (4, 0, ''), (5, 0, ''),
+           (6, 0, ''), (7, 0, ''), (8, 0, ''), (9, 0, ''), (10, 0, '');
+
+    INSERT INTO @ClientSectionAvailTable (SectionID, Avail)
+    VALUES (1, 0), (2, 0), (3, 0), (4, 0), (5, 0),
+           (6, 0), (7, 0), (8, 0), (9, 0), (10, 0);
+
+    IF @DynamicClientID IS NOT NULL
+    BEGIN
+        DECLARE @ClientIDs TABLE (ClientID INT);
+        INSERT INTO @ClientIDs (ClientID)
+        SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+        -- Process each ClientID
+        DECLARE @DCC_ClientID INT;
+        DECLARE Client_Cursor CURSOR FOR SELECT ClientID FROM @ClientIDs;
+        OPEN Client_Cursor;
+        FETCH NEXT FROM Client_Cursor INTO @DCC_ClientID;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- User Section Availability Logic
+            UPDATE U
+            SET 
+                Avail = CASE 
+                           WHEN UA.Avail = 0 THEN 0 
+                           ELSE 1 
+                        END,
+                XML = COALESCE(UA.UserSecurityXML, U.XML)
+            FROM @UserSectionAvailTable U
+            CROSS APPLY (
+                SELECT 
+                    SU.accessflag AS Avail, 
+                    SU.SecurityXML AS UserSecurityXML
+                FROM myescreenrandomusersectionsettings SU WITH (NOLOCK)
+                WHERE SU.userid = @UserID AND SU.randomsectionid = U.SectionID
+            ) UA;
+
+            -- Client Section Availability Logic
+            UPDATE C
+            SET 
+                Avail = CASE 
+                           WHEN CA.ClientSectionAvail = 0 THEN 0
+                           ELSE 1 
+                        END
+            FROM @ClientSectionAvailTable C
+            CROSS APPLY (
+                SELECT 
+                    SC.accessflag AS ClientSectionAvail
+                FROM myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                WHERE SC.clientid = @DCC_ClientID AND SC.randomsectionid = C.SectionID
+            ) CA;
+
+            -- Update ClientTypeID and determine if it's a group or master account
+            DECLARE @ClientTypeID INT;
+            DECLARE @MasterID INT;
+            DECLARE @GroupID INT;
+
+            SELECT @ClientTypeID = CASE 
+                                      WHEN clientsubaccount <> 0 THEN 0
+                                      WHEN EXISTS (SELECT 1 FROM nationalaccountextras WHERE clientid = @DCC_ClientID) THEN 2
+                                      ELSE 1 
+                                   END,
+                   @MasterID = (SELECT clientid FROM clientaccounts WHERE clientaccount = clientaccount AND clientsubaccount = 0)
+            FROM clientaccounts WHERE clientid = @DCC_ClientID;
+
+            SELECT @GroupID = groupid 
+            FROM nationalaccountextras 
+            WHERE clientid = @DCC_ClientID;
+
+            IF @ClientTypeID = 2
+            BEGIN
+                -- Group client logic
+                UPDATE C
+                SET 
+                    Avail = CASE 
+                               WHEN SC.accessflag = 1 THEN 1
+                               ELSE 0 
+                            END
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @DCC_ClientID AND SC.clienttypeid = 2;
+            END;
+            IF @ClientTypeID = 1
+            BEGIN
+                -- Master client logic
+                UPDATE C
+                SET 
+                    Avail = CASE 
+                               WHEN SC.accessflag = 1 THEN 1
+                               ELSE 0 
+                            END
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @MasterID AND SC.clienttypeid = 1;
+                
+                UPDATE C
+                SET 
+                    Avail = CASE 
+                               WHEN SC.accessflag = 1 THEN 1
+                               ELSE 0 
+                            END
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @GroupID AND SC.clienttypeid = 1;
+            END;
+            IF @ClientTypeID = 0
+            BEGIN
+                -- Client logic
+                UPDATE C
+                SET 
+                    Avail = CASE 
+                               WHEN SC.accessflag = 1 THEN 1
+                               ELSE 0 
+                            END
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @DCC_ClientID AND SC.clienttypeid = 0;
+
+                UPDATE C
+                SET 
+                    Avail = CASE 
+                               WHEN SC.accessflag = 1 THEN 1
+                               ELSE 0 
+                            END
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @MasterID AND SC.clienttypeid = 0;
+                
+                UPDATE C
+                SET 
+                    Avail = CASE 
+                               WHEN SC.accessflag = 1 THEN 1
+                               ELSE 0 
+                            END
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @GroupID AND SC.clienttypeid = 0;
+            END;
+
+            FETCH NEXT FROM Client_Cursor INTO @DCC_ClientID;
+        END;
+
+        CLOSE Client_Cursor;
+        DEALLOCATE Client_Cursor;
+    END;
+
+    -- Select the final results
+    SELECT 
+        CASE WHEN MAX(cs.Avail) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS ClientAvail,
+        CASE WHEN MAX(us.Avail) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS UserAvail,
+        COALESCE(MAX(us.XML), '') AS SecurityXML,
+        rs.menutext,
+        rs.menuactionv2,
+        rs.randomsectionid,
+        rs.description
+    FROM 
+        randomsection rs WITH (NOLOCK)
+    LEFT JOIN @UserSectionAvailTable us ON rs.randomsectionid = us.SectionID
+    LEFT JOIN @ClientSectionAvailTable cs ON rs.randomsectionid = cs.SectionID
+    GROUP BY rs.menutext, rs.menuactionv2, rs.randomsectionid, rs.description
+    ORDER BY rs.randomsectionid;
+END;
