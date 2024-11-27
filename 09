@@ -1,1 +1,90 @@
  
+CREATE FUNCTION [dbo].[fn_GetUserRandomSectionAvail]
+(
+    @ClientID INT,
+    @UserID INT,
+    @SectionID INT
+)
+RETURNS TABLE
+AS
+RETURN
+(
+    WITH ClientInfo AS
+    (
+        SELECT 
+            clientaccount,
+            clientsubaccount,
+            CASE
+                WHEN clientsubaccount <> 0 THEN 0
+                WHEN EXISTS (SELECT 1 FROM nationalaccountextras WHERE groupid = @ClientID) THEN 2
+                ELSE 1
+            END AS ClientTypeID,
+            (SELECT clientid FROM clientaccounts WHERE clientaccount = clientaccounts.clientaccount AND clientsubaccount = 0) AS MasterID,
+            (SELECT groupid FROM nationalaccountextras WHERE clientid = @ClientID) AS GroupID
+        FROM clientaccounts
+        WHERE clientid = @ClientID
+    ),
+    UserAccess AS
+    (
+        SELECT 
+            accessflag AS UserSectionAvail,
+            SecurityXML AS UserSecurityXML
+        FROM myescreenrandomusersectionsettings
+        WHERE userid = @UserID AND randomsectionid = @SectionID
+    ),
+    ClientAccess AS
+    (
+        SELECT 
+            accessflag AS ClientSectionAvail,
+            SecurityXML AS ClientSecurityXML,
+            clienttypeid
+        FROM myescreenrandomclientsectionsettings
+        WHERE clientid = @ClientID AND randomsectionid = @SectionID
+    ),
+    GroupAccess AS
+    (
+        SELECT 
+            accessflag AS GroupSectionAvail,
+            SecurityXML AS GroupSecurityXML
+        FROM myescreenrandomclientsectionsettings
+        WHERE clientid = (SELECT GroupID FROM ClientInfo) AND randomsectionid = @SectionID
+    ),
+    MasterAccess AS
+    (
+        SELECT 
+            accessflag AS MasterSectionAvail,
+            SecurityXML AS MasterSecurityXML
+        FROM myescreenrandomclientsectionsettings
+        WHERE clientid = (SELECT MasterID FROM ClientInfo) AND randomsectionid = @SectionID
+    ),
+    CombinedAccess AS
+    (
+        SELECT 
+            ISNULL(UserAccess.UserSectionAvail, 0) AS UserSectionAvail,
+            ISNULL(ClientAccess.ClientSectionAvail, 0) AS ClientSectionAvail,
+            ISNULL(GroupAccess.GroupSectionAvail, 0) AS GroupSectionAvail,
+            ISNULL(MasterAccess.MasterSectionAvail, 0) AS MasterSectionAvail,
+            ISNULL(UserAccess.UserSecurityXML, 
+                ISNULL(ClientAccess.ClientSecurityXML, 
+                    ISNULL(GroupAccess.GroupSecurityXML, 
+                        ISNULL(MasterAccess.MasterSecurityXML, NULL)
+                    )
+                )
+            ) AS SecurityXML
+        FROM UserAccess
+        LEFT JOIN ClientAccess ON ClientAccess.clienttypeid = (SELECT ClientTypeID FROM ClientInfo)
+        LEFT JOIN GroupAccess ON 1 = 1 -- Always join as we need the GroupAccess for comparison
+        LEFT JOIN MasterAccess ON 1 = 1 -- Always join as we need the MasterAccess for comparison
+    )
+    SELECT 
+        CASE 
+            WHEN CombinedAccess.UserSectionAvail = 0 THEN 0 
+            ELSE ISNULL(CombinedAccess.ClientSectionAvail, 
+                ISNULL(CombinedAccess.GroupSectionAvail, 
+                    ISNULL(CombinedAccess.MasterSectionAvail, 0)
+                )
+            )
+        END AS Avail,
+        CombinedAccess.SecurityXML
+    FROM CombinedAccess
+)
