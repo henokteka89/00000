@@ -34,6 +34,187 @@ BEGIN
             UPDATE U
             SET 
                 Avail = UA.Avail,
+                SecurityXML = CASE 
+                                WHEN UA.Avail = 1 THEN ISNULL(UA.UserSecurityXML, U.SecurityXML)
+                                ELSE NULL 
+                              END
+            FROM @UserSectionAvailTable U
+            CROSS APPLY (
+                SELECT 
+                    CASE 
+                        WHEN SU.accessflag = 1 THEN 1 
+                        ELSE 0 
+                    END AS Avail, 
+                    SU.SecurityXML AS UserSecurityXML
+                FROM myescreenrandomusersectionsettings SU WITH (NOLOCK)
+                WHERE SU.userid = @UserID AND SU.randomsectionid = U.SectionID
+            ) UA;
+
+            -- Client section availability
+            UPDATE C
+            SET 
+                Avail = CA.Avail
+            FROM @ClientSectionAvailTable C
+            CROSS APPLY (
+                SELECT 
+                    CASE 
+                        WHEN SC.accessflag = 1 THEN 1 
+                        ELSE 0 
+                    END AS Avail
+                FROM myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                WHERE SC.clientid = @DCC_ClientID AND SC.randomsectionid = C.SectionID
+            ) CA;
+
+            DECLARE @ClientTypeID INT;
+            DECLARE @MasterID INT;
+            DECLARE @GroupID INT;
+
+            SELECT 
+                @ClientTypeID = CASE 
+                                  WHEN clientsubaccount <> 0 THEN 0
+                                  WHEN EXISTS (SELECT 1 FROM nationalaccountextras WHERE groupid = @DCC_ClientID) THEN 2
+                                  ELSE 1 
+                                END,
+                @MasterID = (SELECT clientid FROM clientaccounts WHERE clientaccount = @ClientAccount AND clientsubaccount = 0)
+            FROM clientaccounts WHERE clientid = @DCC_ClientID;
+
+            SELECT @GroupID = groupid 
+            FROM nationalaccountextras 
+            WHERE clientid = @DCC_ClientID;
+
+            -- Update availability based on client type
+            IF @ClientTypeID = 2
+            BEGIN
+                UPDATE C
+                SET Avail = 1
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @DCC_ClientID AND SC.clienttypeid = 2;
+            END;
+
+            IF @ClientTypeID = 1
+            BEGIN
+                UPDATE C
+                SET Avail = 1
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @MasterID AND SC.clienttypeid = 1;
+
+                UPDATE C
+                SET Avail = 1
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @GroupID AND SC.clienttypeid = 1;
+            END;
+
+            IF @ClientTypeID = 0
+            BEGIN
+                UPDATE C
+                SET Avail = 1
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @DCC_ClientID AND SC.clienttypeid = 0;
+
+                UPDATE C
+                SET Avail = 1
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @MasterID AND SC.clienttypeid = 0;
+
+                UPDATE C
+                SET Avail = 1
+                FROM @ClientSectionAvailTable C
+                INNER JOIN myescreenrandomclientsectionsettings SC WITH (NOLOCK)
+                ON C.SectionID = SC.randomsectionid
+                WHERE SC.clientid = @GroupID AND SC.clienttypeid = 0;
+            END;
+
+            FETCH NEXT FROM Client_Cursor INTO @DCC_ClientID;
+        END;
+
+        CLOSE Client_Cursor;
+        DEALLOCATE Client_Cursor;
+    END;
+
+    -- Select the final results
+    SELECT 
+        CASE WHEN MAX(CAST(cs.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS ClientAvail,
+        CASE WHEN MAX(CAST(us.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS UserAvail,
+        COALESCE(MAX(CASE WHEN us.Avail = 1 THEN us.SecurityXML ELSE NULL END), NULL) AS SecurityXML,
+        rs.menutext,
+        rs.menuactionv2,
+        rs.randomsectionid,
+        rs.description
+    FROM randomsection rs WITH (NOLOCK)
+    LEFT JOIN @UserSectionAvailTable us ON rs.randomsectionid = us.SectionID
+    LEFT JOIN @ClientSectionAvailTable cs ON rs.randomsectionid = cs.SectionID
+    GROUP BY rs.menutext, rs.menuactionv2, rs.randomsectionid, rs.description
+    ORDER BY rs.randomsectionid;
+END;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Table variables to hold section availability information
+    DECLARE @UserSectionAvailTable TABLE (SectionID INT, Avail BIT, SecurityXML VARCHAR(1000));
+    DECLARE @ClientSectionAvailTable TABLE (SectionID INT, Avail BIT);
+
+    -- Initialize availability tables with all sections set to unavailable
+    INSERT INTO @UserSectionAvailTable (SectionID, Avail, SecurityXML)
+    VALUES (1, 0, NULL), (2, 0, NULL), (3, 0, NULL), (4, 0, NULL), (5, 0, NULL),
+           (6, 0, NULL), (7, 0, NULL), (8, 0, NULL), (9, 0, NULL), (10, 0, NULL);
+
+    INSERT INTO @ClientSectionAvailTable (SectionID, Avail)
+    VALUES (1, 0), (2, 0), (3, 0), (4, 0), (5, 0),
+           (6, 0), (7, 0), (8, 0), (9, 0), (10, 0);
+
+    -- Handle dynamic client IDs
+    IF @DynamicClientID IS NOT NULL
+    BEGIN
+        DECLARE @ClientIDs TABLE (ClientID INT);
+        INSERT INTO @ClientIDs (ClientID)
+        SELECT ClientID FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+        DECLARE @DCC_ClientID INT;
+        DECLARE @ClientAccount INT;
+        DECLARE Client_Cursor CURSOR FOR SELECT ClientID FROM @ClientIDs;
+        OPEN Client_Cursor;
+        FETCH NEXT FROM Client_Cursor INTO @DCC_ClientID;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- User section availability
+            UPDATE U
+            SET 
+                Avail = UA.Avail,
                 SecurityXML = CASE WHEN UA.UserSecurityXML IS NOT NULL AND UA.UserSecurityXML <> '' THEN UA.UserSecurityXML ELSE NULL END
             FROM @UserSectionAvailTable U
             CROSS APPLY (
