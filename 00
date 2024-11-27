@@ -14,7 +14,7 @@ BEGIN
 
     -- Step 3: Prepare Temporary Table for Results
     CREATE TABLE #Results (
-        SectionID INT,
+        SectionID INT PRIMARY KEY,
         UserAvail INT,
         ClientAvail INT,
         SecurityXML VARCHAR(1000)
@@ -30,6 +30,9 @@ BEGIN
         DECLARE @UserAvail INT = NULL;
         DECLARE @ClientAvail INT = NULL;
         DECLARE @SecurityXML VARCHAR(1000) = NULL;
+        DECLARE @TempUserAvail INT = NULL;
+        DECLARE @TempClientAvail INT = NULL;
+        DECLARE @TempSecurityXML VARCHAR(1000) = NULL;
 
         -- Iterate Over ClientIDs
         DECLARE @ClientID INT;
@@ -38,31 +41,48 @@ BEGIN
         FETCH NEXT FROM client_cursor INTO @ClientID;
         WHILE @@FETCH_STATUS = 0
         BEGIN
+            -- Reset temporary variables for each client
+            SET @TempUserAvail = NULL;
+            SET @TempClientAvail = NULL;
+            SET @TempSecurityXML = NULL;
+
             -- Call User Random Section Availability Stored Procedure
             EXEC web_Intranet_MyeMgmt_UserRandomSectionAvail
                 @ClientID = @ClientID,
                 @UserID = @UserID,
                 @SectionID = @SectionID,
-                @Avail = @UserAvail OUTPUT,
-                @SecurityXML = @SecurityXML OUTPUT;
+                @Avail = @TempUserAvail OUTPUT,
+                @SecurityXML = @TempSecurityXML OUTPUT;
 
-            -- Update UserAvail and SecurityXML if availability is granted
-            IF @UserAvail = 1
+            -- Update UserAvail and SecurityXML according to logic
+            IF @TempUserAvail = 0
+            BEGIN
+                SET @UserAvail = 0;
+                SET @SecurityXML = @TempSecurityXML;  -- SecurityXML should be set when user is denied
+                -- No need to check further clients for this section
+                BREAK;
+            END
+            ELSE IF @TempUserAvail = 1
+            BEGIN
                 SET @UserAvail = 1;
+                IF @SecurityXML IS NULL AND @TempSecurityXML IS NOT NULL
+                    SET @SecurityXML = @TempSecurityXML;  -- Set SecurityXML if not already set
+            END
+            ELSE
+            BEGIN
+                IF @SecurityXML IS NULL AND @TempSecurityXML IS NOT NULL
+                    SET @SecurityXML = @TempSecurityXML;
+            END
 
             -- Call Client Random Section Availability Stored Procedure
             EXEC web_Intranet_MyeMgmt_ClientRandomSectionAvail
                 @ClientID = @ClientID,
                 @SectionID = @SectionID,
-                @Avail = @ClientAvail OUTPUT;
+                @Avail = @TempClientAvail OUTPUT;
 
-            -- Update ClientAvail if availability is granted
-            IF @ClientAvail = 1
+            -- Update ClientAvail
+            IF @TempClientAvail = 1
                 SET @ClientAvail = 1;
-
-            -- Exit loops early if availability is confirmed
-            IF @UserAvail = 1 AND @ClientAvail = 1
-                BREAK;
 
             FETCH NEXT FROM client_cursor INTO @ClientID;
         END
