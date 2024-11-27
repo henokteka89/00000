@@ -52,7 +52,7 @@ UserSettings AS
         us.accessflag AS UserAccessFlag,
         us.SecurityXML AS UserSecurityXML
     FROM myescreenrandomusersectionsettings us
-    WHERE us.userid = @UserID
+    WHERE us.userid = @UserID AND us.randomsectionid IN (SELECT SectionID FROM @SectionIDs)
 ),
 ClientSettings AS
 (
@@ -63,7 +63,9 @@ ClientSettings AS
         css.accessflag AS AccessFlag,
         css.SECURITYXML AS SecurityXML
     FROM myescreenrandomclientsectionsettings css
+    WHERE css.randomsectionid IN (SELECT SectionID FROM @SectionIDs)
 ),
+-- Step 4: Determine SecurityXML with Proper Priority
 SecurityXMLPriority AS
 (
     SELECT
@@ -89,14 +91,13 @@ SecurityXMLPriority AS
     -- Group Level
     LEFT JOIN ClientSettings cs_group ON cs_group.clientid = c.GroupID AND cs_group.clienttypeid = 2 AND cs_group.SectionID = c.SectionID
     WHERE
-        -- We need to consider rows where either UserAccessFlag is not NULL or any SecurityXML is available
-        us.UserAccessFlag IS NOT NULL
-        OR us.UserSecurityXML IS NOT NULL
+        -- Only consider rows where SecurityXML is available
+        us.UserSecurityXML IS NOT NULL
         OR cs_client.SecurityXML IS NOT NULL
         OR cs_master.SecurityXML IS NOT NULL
         OR cs_group.SecurityXML IS NOT NULL
 )
--- Step 4: Select the Highest Priority SecurityXML for Each SectionID
+-- Step 5: Select the Highest Priority SecurityXML for Each SectionID
 SELECT
     s.SectionID,
     sx.SecurityXML
