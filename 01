@@ -5,6 +5,7 @@ BEGIN
     -- Table variables to hold section availability information
     DECLARE @UserSectionAvailTable TABLE (SectionID INT, Avail BIT, SecurityXML VARCHAR(1000));
     DECLARE @ClientSectionAvailTable TABLE (SectionID INT, Avail BIT);
+    DECLARE @FinalResults TABLE (ClientAvail BIT, UserAvail BIT, SecurityXML VARCHAR(1000), menutext NVARCHAR(255), menuactionv2 NVARCHAR(255), randomsectionid INT, description NVARCHAR(255));
 
     -- Initialize availability tables with all sections set to unavailable
     INSERT INTO @UserSectionAvailTable (SectionID, Avail, SecurityXML)
@@ -34,7 +35,7 @@ BEGIN
             UPDATE U
             SET 
                 Avail = UA.Avail,
-                SecurityXML = ISNULL(UA.UserSecurityXML, U.SecurityXML)
+                SecurityXML = COALESCE(UA.UserSecurityXML, U.SecurityXML)
             FROM @UserSectionAvailTable U
             CROSS APPLY (
                 SELECT 
@@ -138,23 +139,33 @@ BEGIN
         DEALLOCATE Client_Cursor;
     END;
 
-    -- Select the final results
+    -- Populate final results
+    INSERT INTO @FinalResults (ClientAvail, UserAvail, SecurityXML, menutext, menuactionv2, randomsectionid, description)
     SELECT 
-        CASE WHEN MAX(CAST(cs.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS ClientAvail,
-        CASE WHEN MAX(CAST(us.Avail AS INT)) = 1 THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS UserAvail,
-        COALESCE(MAX(us.SecurityXML), NULL) AS SecurityXML,
+        CAST(C.Avail AS BIT) AS ClientAvail, 
+        CAST(U.Avail AS BIT) AS UserAvail,
+        CASE WHEN U.Avail = 1 THEN COALESCE(U.SecurityXML, '') ELSE NULL END AS SecurityXML,
         rs.menutext,
         rs.menuactionv2,
         rs.randomsectionid,
         rs.description
-    FROM randomsection rs WITH (NOLOCK)
-    LEFT JOIN @UserSectionAvailTable us ON rs.randomsectionid = us.SectionID
-    LEFT JOIN @ClientSectionAvailTable cs ON rs.randomsectionid = cs.SectionID
-    GROUP BY rs.menutext, rs.menuactionv2, rs.randomsectionid, rs.description
-    ORDER BY rs.randomsectionid;
+    FROM 
+        randomsection rs WITH (NOLOCK)
+    LEFT JOIN @UserSectionAvailTable U ON rs.randomsectionid = U.SectionID
+    LEFT JOIN @ClientSectionAvailTable C ON rs.randomsectionid = C.SectionID;
+
+    -- Select the final results
+    SELECT 
+        ClientAvail,
+        UserAvail,
+        SecurityXML,
+        menutext,
+        menuactionv2,
+        randomsectionid,
+        description
+    FROM @FinalResults
+    ORDER BY randomsectionid;
 END;
- 
- 
 
 
 
