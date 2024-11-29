@@ -1,1 +1,102 @@
  
+CREATE FUNCTION  
+(
+    @ClientID INT,  -- Input ClientID
+    @UserID INT     -- Input UserID
+)
+RETURNS @Result TABLE
+(
+    SectionID INT,          -- Section ID (1 to 10)
+    UserAvail BIT,          -- User availability for the section
+    SecurityXML VARCHAR(1000)  -- Security XML for the section
+)
+AS
+BEGIN
+    -- Variables
+    DECLARE @ClientTypeID INT, @MasterID INT, @GroupID INT;
+
+    -- Step 1: Determine ClientTypeID and related IDs
+    SELECT 
+        @ClientTypeID = 
+            CASE 
+                WHEN ca.ClientSubAccount = 0 THEN 
+                    CASE 
+                        WHEN EXISTS (SELECT 1 FROM NationalAccountExtras WHERE GroupID = ca.ClientID) THEN 2
+                        ELSE 1
+                    END
+                ELSE 0
+            END,
+        @MasterID = CASE WHEN ca.ClientSubAccount = 0 THEN NULL ELSE ca.ClientID END,
+        @GroupID = nae.GroupID
+    FROM ClientAccounts ca
+    LEFT JOIN NationalAccountExtras nae ON ca.ClientID = nae.ClientID
+    WHERE ca.ClientID = @ClientID;
+
+    -- Step 2: Process availability and SecurityXML based on ClientTypeID
+    -- Insert logic for all SectionIDs (1 to 10)
+    INSERT INTO @Result
+    SELECT 
+        rs.RandomSectionID AS SectionID,
+        -- Determine UserAvail based on ClientTypeID
+        CASE 
+            -- Group-level logic
+            WHEN @ClientTypeID = 2 THEN 
+                CASE WHEN EXISTS (
+                    SELECT 1 
+                    FROM MyScreenRandomClientSectionSettings cs
+                    WHERE cs.ClientID = @GroupID
+                      AND cs.ClientTypeID = 2
+                      AND cs.RandomSectionID = rs.RandomSectionID
+                      AND cs.AccessFlag = 1
+                ) THEN 1 ELSE 0 END
+            -- Master-level logic
+            WHEN @ClientTypeID = 1 THEN 
+                CASE WHEN EXISTS (
+                    SELECT 1 
+                    FROM MyScreenRandomClientSectionSettings cs
+                    WHERE cs.ClientID = @MasterID
+                      AND cs.ClientTypeID = 1
+                      AND cs.RandomSectionID = rs.RandomSectionID
+                      AND cs.AccessFlag = 1
+                ) THEN 1 ELSE 0 END
+            -- Client-level logic
+            ELSE 
+                CASE WHEN EXISTS (
+                    SELECT 1 
+                    FROM MyScreenRandomUserSectionSettings us
+                    WHERE us.ClientID = @ClientID
+                      AND us.UserID = @UserID
+                      AND us.RandomSectionID = rs.RandomSectionID
+                      AND us.AccessFlag = 1
+                ) THEN 1 ELSE 0 END
+        END AS UserAvail,
+        -- Fetch SecurityXML based on ClientTypeID
+        CASE 
+            -- Group-level SecurityXML
+            WHEN @ClientTypeID = 2 THEN 
+                (SELECT TOP 1 cs.SecurityXML 
+                 FROM MyScreenRandomClientSectionSettings cs
+                 WHERE cs.ClientID = @GroupID
+                   AND cs.ClientTypeID = 2
+                   AND cs.RandomSectionID = rs.RandomSectionID)
+            -- Master-level SecurityXML
+            WHEN @ClientTypeID = 1 THEN 
+                (SELECT TOP 1 cs.SecurityXML 
+                 FROM MyScreenRandomClientSectionSettings cs
+                 WHERE cs.ClientID = @MasterID
+                   AND cs.ClientTypeID = 1
+                   AND cs.RandomSectionID = rs.RandomSectionID)
+            -- Client-level SecurityXML
+            ELSE 
+                (SELECT TOP 1 us.SecurityXML 
+                 FROM MyScreenRandomUserSectionSettings us
+                 WHERE us.ClientID = @ClientID
+                   AND us.UserID = @UserID
+                   AND us.RandomSectionID = rs.RandomSectionID)
+        END AS SecurityXML
+    FROM RandomSection rs
+    WHERE rs.RandomSectionID BETWEEN 1 AND 10; -- Process sections 1 to 10
+
+    RETURN;
+END;
+GO
