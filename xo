@@ -1,33 +1,58 @@
+-- Create a table to store filtered client information
+CREATE TABLE #FilteredClients (
+    ClientID INT,
+    ClientTypeID INT,
+    MasterID INT NULL,
+    GroupID INT NULL,
+    SectionID INT,
+    AccessFlag INT,
+    SecurityXML VARCHAR(1000) NULL
+);
+
+-- Pre-filter logic
 INSERT INTO #FilteredClients (ClientID, ClientTypeID, MasterID, GroupID, SectionID, AccessFlag, SecurityXML)
 SELECT
     ca.ClientID,
+    -- Determine ClientTypeID based on ClientSubaccount and group existence
     CASE
-        WHEN ca.ClientSubaccount <> 0 THEN 0
+        WHEN c.ClientSubaccount <> 0 THEN 0
         WHEN EXISTS (SELECT 1 FROM nationalaccountextras WHERE groupid = ca.ClientID) THEN 2
         ELSE 1
     END AS ClientTypeID,
-    (SELECT TOP 1 clientid FROM clientaccounts WHERE clientaccount = ca.ClientAccount AND clientsubaccount = 0) AS MasterID,
-    (SELECT TOP 1 groupid FROM nationalaccountextras WHERE clientid = ca.ClientID) AS GroupID,
+    -- Retrieve MasterID (client with the same account but subaccount = 0)
+    (SELECT TOP 1 clientid 
+     FROM clientaccounts 
+     WHERE clientaccount = c.ClientAccount AND clientsubaccount = 0) AS MasterID,
+    -- Retrieve GroupID from nationalaccountextras
+    (SELECT TOP 1 groupid 
+     FROM nationalaccountextras 
+     WHERE clientid = ca.ClientID) AS GroupID,
     rs.RandomSectionID,
+    -- AccessFlag and SecurityXML from settings
     ISNULL(mc.AccessFlag, 0) AS AccessFlag,
     mc.SecurityXML
 FROM 
     fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID) AS ca
+-- Join with clientaccounts to retrieve ClientSubaccount and ClientAccount
+INNER JOIN 
+    clientaccounts c WITH (NOLOCK)
+    ON ca.ClientID = c.ClientID
 CROSS APPLY (
     SELECT rs.RandomSectionID FROM randomsection rs
 ) rs
 LEFT JOIN 
     myEscreenRandomClientSectionSettings mc WITH (NOLOCK)
     ON (mc.ClientID IN (ca.ClientID, 
-                        (SELECT TOP 1 clientid FROM clientaccounts WHERE clientaccount = ca.ClientAccount AND clientsubaccount = 0),
+                        (SELECT TOP 1 clientid FROM clientaccounts WHERE clientaccount = c.ClientAccount AND clientsubaccount = 0),
                         (SELECT TOP 1 groupid FROM nationalaccountextras WHERE clientid = ca.ClientID))
         AND mc.ClientTypeID = 
         CASE
-            WHEN ca.ClientSubaccount <> 0 THEN 0
+            WHEN c.ClientSubaccount <> 0 THEN 0
             WHEN EXISTS (SELECT 1 FROM nationalaccountextras WHERE groupid = ca.ClientID) THEN 2
             ELSE 1
         END
        AND mc.RandomSectionID = rs.RandomSectionID);
+
 
 
 
