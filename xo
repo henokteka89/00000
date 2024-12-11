@@ -1,5 +1,58 @@
 -- Step 1: Retrieve all Client IDs related to @DynamicClientID
 WITH FilteredClients AS (
+    SELECT 
+        ca.ClientID, 
+        ca.ClientAccount, 
+        ca.ClientSubAccount, 
+        CASE 
+            WHEN ca.ClientSubAccount <> 0 THEN 0 -- Sub-client
+            WHEN EXISTS (SELECT 1 FROM nationalaccountextras nae WHERE nae.GroupID = ca.ClientID) THEN 2 -- Group
+            ELSE 1 -- Master
+        END AS ClientTypeID,
+        COALESCE((SELECT TOP 1 ClientID 
+                  FROM clientaccounts 
+                  WHERE ClientAccount = ca.ClientAccount 
+                  AND ClientSubAccount = 0), 0) AS MasterID,
+        COALESCE((SELECT GroupID 
+                  FROM nationalaccountextras 
+                  WHERE ClientID = ca.ClientID), 0) AS GroupID
+    FROM clientaccounts ca
+    WHERE ca.ClientID IN (
+        SELECT EntityID FROM dbo.fn_GetDynamicEntityGroup(@DynamicClientID)
+    )
+)
+SELECT DISTINCT fc.ClientID
+INTO #FilteredClientIDs
+FROM FilteredClients fc
+WHERE EXISTS (
+    SELECT 1
+    FROM myescreenrandomclientsectionsettings rc
+    WHERE rc.ClientID = fc.ClientID 
+      AND rc.RandomSectionID = 1 -- Specifically for Section 1
+      AND rc.AccessFlag = 1
+);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- Step 1: Retrieve all Client IDs related to @DynamicClientID
+WITH FilteredClients AS (
     SELECT ca.ClientID, ca.ClientAccount, ca.ClientSubAccount, 
            CASE 
                WHEN ca.ClientSubAccount <> 0 THEN 0 -- Sub-client
