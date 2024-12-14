@@ -1,3 +1,50 @@
+-- Precompute MasterID and GroupID for all ClientIDs
+WITH FilteredClientIDs AS (
+    SELECT 
+        ca.ClientID, 
+        c.ClientAccount, 
+        c.ClientSubaccount,
+        ne.GroupID,
+        MasterID = 
+            (SELECT TOP 1 clientid 
+             FROM clientaccounts 
+             WHERE clientaccount = c.ClientAccount AND clientsubaccount = 0)
+    FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID) ca
+    INNER JOIN cla c WITH (NOLOCK) ON ca.ClientID = c.ClientID
+    LEFT JOIN nae ne WITH (NOLOCK) ON ca.ClientID = ne.ClientID
+),
+CombinedClientIDs AS (
+    -- Combine all relevant ClientIDs: Direct, Master, and Group
+    SELECT ClientID FROM FilteredClientIDs
+    UNION ALL
+    SELECT MasterID FROM FilteredClientIDs WHERE MasterID IS NOT NULL
+    UNION ALL
+    SELECT GroupID FROM FilteredClientIDs WHERE GroupID IS NOT NULL
+)
+-- Filter by existence 
+SELECT DISTINCT f.ClientID
+FROM FilteredClientIDs f
+INNER JOIN CombinedClientIDs cc ON cc.ClientID = f.ClientID
+INNER JOIN SectionSettings ms 
+    ON ms.ClientID = cc.ClientID
+WHERE ISNULL(ms.AccessFlag, 0) = 1; -- Exclude ClientIDs with AccessFlag = 0 or NULL
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 DECLARE @UserID INT = 1340;  -- Your UserID
 DECLARE @DynamicClientID INT = -- Your DynamicClientID
 
