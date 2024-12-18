@@ -1,3 +1,97 @@
+-- Step 4: Determine Client Availability
+;WITH ClientHierarchy AS
+(
+    SELECT 
+        ca.ClientID,
+        ca.ClientAccount,
+        ca.ClientSubAccount,
+        CASE 
+            WHEN ca.ClientSubAccount <> 0 THEN 0  -- Client Level
+            WHEN EXISTS (
+                SELECT 1 
+                FROM nationalaccountextras na (NOLOCK) 
+                WHERE na.groupid = ca.ClientID
+            ) THEN 2  -- Group Level
+            ELSE 1  -- Master Level
+        END AS ClientTypeID,
+        ISNULL(na.GroupID, NULL) AS GroupID
+    FROM #ClientIDs ci
+    JOIN clientaccounts ca (NOLOCK) ON ca.ClientID = ci.ClientID
+    LEFT JOIN nationalaccountextras na (NOLOCK) ON na.ClientID = ca.ClientID
+),
+ClientAvailability AS
+(
+    SELECT 
+        rs.RandomSectionID,
+        ch.ClientID,
+        MAX(
+            CASE
+                WHEN ch.ClientTypeID = 2 THEN 
+                    (SELECT TOP 1 mrc.accessflag 
+                     FROM myescreenrandomclientsettings mrc (NOLOCK)
+                     WHERE mrc.ClientID = ch.ClientID 
+                       AND mrc.ClientTypeID = 2 
+                       AND mrc.RandomSectionID = rs.RandomSectionID)
+                WHEN ch.ClientTypeID = 1 THEN 
+                    COALESCE(
+                        (SELECT TOP 1 mrc.accessflag 
+                         FROM myescreenrandomclientsettings mrc (NOLOCK)
+                         WHERE mrc.ClientID = ch.ClientID 
+                           AND mrc.ClientTypeID = 1 
+                           AND mrc.RandomSectionID = rs.RandomSectionID),
+                        (SELECT TOP 1 mrc.accessflag 
+                         FROM myescreenrandomclientsettings mrc (NOLOCK)
+                         WHERE mrc.ClientID = ch.GroupID 
+                           AND mrc.ClientTypeID = 1 
+                           AND mrc.RandomSectionID = rs.RandomSectionID)
+                    )
+                ELSE 
+                    COALESCE(
+                        (SELECT TOP 1 mrc.accessflag 
+                         FROM myescreenrandomclientsettings mrc (NOLOCK)
+                         WHERE mrc.ClientID = ch.ClientID 
+                           AND mrc.ClientTypeID = 0 
+                           AND mrc.RandomSectionID = rs.RandomSectionID),
+                        (SELECT TOP 1 mrc.accessflag 
+                         FROM myescreenrandomclientsettings mrc (NOLOCK)
+                         WHERE mrc.ClientID = ch.MasterID 
+                           AND mrc.ClientTypeID = 0 
+                           AND mrc.RandomSectionID = rs.RandomSectionID),
+                        (SELECT TOP 1 mrc.accessflag 
+                         FROM myescreenrandomclientsettings mrc (NOLOCK)
+                         WHERE mrc.ClientID = ch.GroupID 
+                           AND mrc.ClientTypeID = 0 
+                           AND mrc.RandomSectionID = rs.RandomSectionID)
+                    )
+            END
+        ) AS ClientAvail
+    FROM #RandomSections rs
+    CROSS JOIN ClientHierarchy ch
+    GROUP BY rs.RandomSectionID, ch.ClientID
+)
+
+-- Update Final Client Availability Table
+UPDATE ca
+SET ClientAvail = 1
+FROM #ClientAvailability ca
+JOIN ClientAvailability av ON ca.RandomSectionID = av.RandomSectionID
+WHERE av.ClientAvail = 1;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 -- Precompute MasterID and GroupID for all ClientIDs
 WITH FilteredClientIDs AS (
     SELECT 
