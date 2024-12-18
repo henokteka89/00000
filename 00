@@ -1,3 +1,95 @@
+
+-- Step 4: Build Client Hierarchy
+WITH ClientHierarchy AS
+(
+    SELECT 
+        ca.ClientID,
+        ca.ClientAccount,
+        ca.ClientSubAccount,
+        CASE 
+            WHEN ca.ClientSubAccount <> 0 THEN 0  -- Client Level
+            WHEN EXISTS (
+                SELECT 1 
+                FROM nationalaccountextras na (NOLOCK) 
+                WHERE na.groupid = ca.ClientID
+            ) THEN 2  -- Group Level
+            ELSE 1  -- Master Level
+        END AS ClientTypeID,
+        ISNULL(na.GroupID, NULL) AS GroupID,
+        ISNULL(
+            (SELECT TOP 1 ca2.ClientID 
+             FROM clientaccounts ca2 (NOLOCK) 
+             WHERE ca2.ClientAccount = ca.ClientAccount AND ca2.ClientSubAccount = 0),
+            NULL
+        ) AS MasterID
+    FROM #ClientIDs ci
+    JOIN clientaccounts ca (NOLOCK) ON ca.ClientID = ci.ClientID
+    LEFT JOIN nationalaccountextras na (NOLOCK) ON na.ClientID = ca.ClientID
+)
+, ClientAccess AS
+(
+    -- Client Level Access
+    SELECT 
+        rs.RandomSectionID,
+        ch.ClientID,
+        1 AS AccessFlag
+    FROM #RandomSections rs
+    JOIN ClientHierarchy ch ON ch.ClientTypeID = 0
+    JOIN myescreenrandomclientsettings mrc (NOLOCK)
+        ON mrc.ClientID = ch.ClientID 
+        AND mrc.ClientTypeID = 0 
+        AND mrc.RandomSectionID = rs.RandomSectionID
+
+    UNION ALL
+
+    -- Master Level Access
+    SELECT 
+        rs.RandomSectionID,
+        ch.ClientID,
+        1 AS AccessFlag
+    FROM #RandomSections rs
+    JOIN ClientHierarchy ch ON ch.ClientTypeID = 1
+    JOIN myescreenrandomclientsettings mrc (NOLOCK)
+        ON mrc.ClientID = ch.MasterID 
+        AND mrc.ClientTypeID = 0 
+        AND mrc.RandomSectionID = rs.RandomSectionID
+
+    UNION ALL
+
+    -- Group Level Access
+    SELECT 
+        rs.RandomSectionID,
+        ch.ClientID,
+        1 AS AccessFlag
+    FROM #RandomSections rs
+    JOIN ClientHierarchy ch ON ch.ClientTypeID = 2
+    JOIN myescreenrandomclientsettings mrc (NOLOCK)
+        ON mrc.ClientID = ch.GroupID 
+        AND mrc.ClientTypeID = 1 
+        AND mrc.RandomSectionID = rs.RandomSectionID
+)
+
+-- Final Update: Client Availability
+UPDATE ca
+SET ClientAvail = 1
+FROM #ClientAvailability ca
+JOIN (
+    SELECT DISTINCT RandomSectionID, ClientID
+    FROM ClientAccess
+) av 
+ON ca.RandomSectionID = av.RandomSectionID;
+
+
+
+
+
+
+
+
+
+
+
+
 -- Step 4: Build Client Hierarchy
 WITH ClientHierarchy AS
 (
