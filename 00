@@ -1,3 +1,68 @@
+WITH CombinedClients AS (
+    -- Step 1: Add Clients under Authorized Groups and Masters
+    SELECT 
+        mydcc.dynamicclientid, 
+        nae.clientid
+    FROM 
+        nationalaccountextra nae WITH (NOLOCK)
+    JOIN 
+        dynamicclientcontents mydcc WITH (NOLOCK)
+        ON nae.groupid = mydcc.clientid
+    WHERE 
+        mydcc.clienttypeid = 2 
+        AND mydcc.includeexcludeflag = 'I'
+
+    UNION ALL
+
+    SELECT 
+        mydcc.dynamicclientid, 
+        ca.clientid
+    FROM 
+        clientaccounts ca WITH (NOLOCK)
+    WHERE 
+        ca.clientaccount IN (
+            SELECT ca1.clientaccount
+            FROM clientaccounts ca1 WITH (NOLOCK)
+            WHERE ca1.clientid IN (
+                SELECT mydcc.clientid
+                FROM dynamicclientcontents mydcc WITH (NOLOCK)
+                WHERE mydcc.clienttypeid = 1
+                    AND mydcc.includeexcludeflag = 'I'
+            )
+        )
+
+    UNION ALL
+
+    -- Step 3: Add Specific Clients
+    SELECT 
+        mydcc.dynamicclientid, 
+        mydcc.clientid
+    FROM 
+        dynamicclientcontents mydcc WITH (NOLOCK)
+    WHERE 
+        mydcc.clienttypeid = 0
+        AND mydcc.includeexcludeflag = 'I'
+)
+
+SELECT 
+    dynamicclientid, 
+    COUNT(DISTINCT clientid) AS TotalClientIDs
+FROM 
+    CombinedClients
+GROUP BY 
+    dynamicclientid
+HAVING 
+    COUNT(DISTINCT clientid) >= 1000 -- Adjust threshold as needed
+ORDER BY 
+    TotalClientIDs DESC;
+
+
+
+
+
+
+
+
 
 -- Step 4: Build Client Hierarchy
 WITH ClientHierarchy AS
