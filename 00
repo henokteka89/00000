@@ -1,5 +1,5 @@
--- Step 4: Determine Client Availability
-;WITH ClientHierarchy AS
+-- Step 4: Build Client Hierarchy
+WITH ClientHierarchy AS
 (
     SELECT 
         ca.ClientID,
@@ -14,68 +14,57 @@
             ) THEN 2  -- Group Level
             ELSE 1  -- Master Level
         END AS ClientTypeID,
-        ISNULL(na.GroupID, NULL) AS GroupID
+        ISNULL(na.GroupID, NULL) AS GroupID,
+        ISNULL(
+            (SELECT TOP 1 ca2.ClientID 
+             FROM clientaccounts ca2 (NOLOCK) 
+             WHERE ca2.ClientAccount = ca.ClientAccount AND ca2.ClientSubAccount = 0),
+            NULL
+        ) AS MasterID
     FROM #ClientIDs ci
     JOIN clientaccounts ca (NOLOCK) ON ca.ClientID = ci.ClientID
     LEFT JOIN nationalaccountextras na (NOLOCK) ON na.ClientID = ca.ClientID
 ),
-ClientAvailability AS
+ClientAccess AS
 (
     SELECT 
         rs.RandomSectionID,
         ch.ClientID,
         MAX(
-            CASE
-                WHEN ch.ClientTypeID = 2 THEN 
-                    (SELECT TOP 1 mrc.accessflag 
-                     FROM myescreenrandomclientsettings mrc (NOLOCK)
-                     WHERE mrc.ClientID = ch.ClientID 
-                       AND mrc.ClientTypeID = 2 
-                       AND mrc.RandomSectionID = rs.RandomSectionID)
-                WHEN ch.ClientTypeID = 1 THEN 
-                    COALESCE(
-                        (SELECT TOP 1 mrc.accessflag 
-                         FROM myescreenrandomclientsettings mrc (NOLOCK)
-                         WHERE mrc.ClientID = ch.ClientID 
-                           AND mrc.ClientTypeID = 1 
-                           AND mrc.RandomSectionID = rs.RandomSectionID),
-                        (SELECT TOP 1 mrc.accessflag 
-                         FROM myescreenrandomclientsettings mrc (NOLOCK)
-                         WHERE mrc.ClientID = ch.GroupID 
-                           AND mrc.ClientTypeID = 1 
-                           AND mrc.RandomSectionID = rs.RandomSectionID)
-                    )
-                ELSE 
-                    COALESCE(
-                        (SELECT TOP 1 mrc.accessflag 
-                         FROM myescreenrandomclientsettings mrc (NOLOCK)
-                         WHERE mrc.ClientID = ch.ClientID 
-                           AND mrc.ClientTypeID = 0 
-                           AND mrc.RandomSectionID = rs.RandomSectionID),
-                        (SELECT TOP 1 mrc.accessflag 
-                         FROM myescreenrandomclientsettings mrc (NOLOCK)
-                         WHERE mrc.ClientID = ch.MasterID 
-                           AND mrc.ClientTypeID = 0 
-                           AND mrc.RandomSectionID = rs.RandomSectionID),
-                        (SELECT TOP 1 mrc.accessflag 
-                         FROM myescreenrandomclientsettings mrc (NOLOCK)
-                         WHERE mrc.ClientID = ch.GroupID 
-                           AND mrc.ClientTypeID = 0 
-                           AND mrc.RandomSectionID = rs.RandomSectionID)
-                    )
+            CASE 
+                WHEN ch.ClientTypeID = 2 THEN mrc.accessflag
+                ELSE NULL
             END
-        ) AS ClientAvail
+        ) AS GroupAccess,
+        MAX(
+            CASE 
+                WHEN ch.ClientTypeID = 1 THEN mrc.accessflag
+                ELSE NULL
+            END
+        ) AS MasterAccess,
+        MAX(
+            CASE 
+                WHEN ch.ClientTypeID = 0 THEN mrc.accessflag
+                ELSE NULL
+            END
+        ) AS ClientAccess
     FROM #RandomSections rs
     CROSS JOIN ClientHierarchy ch
+    LEFT JOIN myescreenrandomclientsettings mrc (NOLOCK)
+        ON mrc.RandomSectionID = rs.RandomSectionID
+        AND (
+            mrc.ClientID = ch.ClientID AND mrc.ClientTypeID = 0 OR
+            mrc.ClientID = ch.MasterID AND mrc.ClientTypeID = 0 OR
+            mrc.ClientID = ch.GroupID AND mrc.ClientTypeID = 1
+        )
     GROUP BY rs.RandomSectionID, ch.ClientID
 )
-
--- Update Final Client Availability Table
 UPDATE ca
 SET ClientAvail = 1
 FROM #ClientAvailability ca
-JOIN ClientAvailability av ON ca.RandomSectionID = av.RandomSectionID
-WHERE av.ClientAvail = 1;
+JOIN ClientAccess av 
+    ON ca.RandomSectionID = av.RandomSectionID
+WHERE COALESCE(av.ClientAccess, av.MasterAccess, av.GroupAccess, 0) = 1;
 
 
 
