@@ -1,47 +1,32 @@
---check relevance
-SELECT DISTINCT ca.ClientID
-INTO #RelevantClients
-FROM #FilteredClients ca
-LEFT JOIN myescreenrandomclientsettings rc
-    ON rc.ClientID = ca.ClientID
-LEFT JOIN myescreenrandomclientsettings rc_group
-    ON rc_group.ClientID = ca.GroupID
-LEFT JOIN myescreenrandomclientsettings rc_master
-    ON rc_master.ClientID = ca.MasterID
-WHERE 
-    rc.AccessFlag = 1 OR -- Direct Client Access
-    rc_group.AccessFlag = 1 OR -- Group Access
-    rc_master.AccessFlag = 1; -- Master Access
+WITH NumberedClients AS (
+    SELECT 
+        ClientID,
+        ROW_NUMBER() OVER (ORDER BY ClientID) AS RowNum
+    FROM #FilteredClients
+)
+DECLARE @BatchSize INT = 500; -- Set batch size
+DECLARE @StartRow INT = 1;
 
-batch
-
-DECLARE @BatchSize INT = 500;
-DECLARE @Start INT = 1, @End INT = @BatchSize, @TotalRows INT;
-
-SELECT @TotalRows = COUNT(*) FROM #FilteredClients;
-
-WHILE @Start <= @TotalRows
+WHILE EXISTS (SELECT 1 FROM NumberedClients WHERE RowNum BETWEEN @StartRow AND @StartRow + @BatchSize - 1)
 BEGIN
-    INSERT INTO #ClientAvailability (RandomSectionID, ClientAvail)
-    SELECT rs.RandomSectionID,
+    -- Process the batch
+    INSERT INTO #ClientAvailability
+    SELECT 
+        rs.RandomSectionID,
         MAX(CASE 
-            WHEN ca.ClientTypeID = 2 AND rc.AccessFlag = 1 THEN 1
-            WHEN ca.ClientTypeID = 1 AND rc.AccessFlag = 1 THEN 1
-            WHEN ca.ClientTypeID = 0 AND rc.AccessFlag = 1 THEN 1
+            WHEN rc.ClientID = nc.ClientID AND rc.AccessFlag = 1 THEN 1
             ELSE 0
         END) AS ClientAvail
     FROM #RandomSections rs
-    JOIN (
-        SELECT * 
-        FROM #FilteredClients 
-        WHERE ROW_NUMBER() OVER (ORDER BY ClientID) BETWEEN @Start AND @End
-    ) ca ON rc.ClientID IN (ca.ClientID, ca.GroupID, ca.MasterID)
+    JOIN NumberedClients nc
+        ON nc.ClientID = rs.RandomSectionID
+        AND nc.RowNum BETWEEN @StartRow AND @StartRow + @BatchSize - 1
     LEFT JOIN myescreenrandomclientsettings rc
-        ON rc.ClientID = ca.ClientID AND rc.RandomSectionID = rs.RandomSectionID AND rc.ClientTypeID = ca.ClientTypeID
+        ON rc.ClientID = nc.ClientID AND rc.RandomSectionID = rs.RandomSectionID
     GROUP BY rs.RandomSectionID;
 
-    SET @Start = @Start + @BatchSize;
-    SET @End = @End + @BatchSize;
+    -- Move to the next batch
+    SET @StartRow = @StartRow + @BatchSize;
 END;
 
 
