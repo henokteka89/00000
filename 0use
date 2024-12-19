@@ -55,36 +55,39 @@ BEGIN
 
     WHILE EXISTS (SELECT 1 FROM #BatchedClients WHERE RowNum BETWEEN @StartRow AND @StartRow + @BatchSize - 1)
     BEGIN
-        -- Process Current Batch
+        -- Intermediate Results for Aggregation
+        WITH ClientAccessCTE AS (
+            SELECT 
+                rs.RandomSectionID,
+                CASE 
+                    WHEN EXISTS (
+                        SELECT 1 FROM nationalaccountextras na WITH (NOLOCK)
+                        WHERE na.GroupID = bc.ClientID
+                    ) THEN 2 -- Group Level
+                    WHEN EXISTS (
+                        SELECT 1 FROM clientaccounts ca WITH (NOLOCK)
+                        WHERE ca.ClientID = bc.ClientID AND ca.ClientSubAccount = 0
+                    ) THEN 1 -- Master Level
+                    ELSE 0 -- Client Level
+                END AS ClientTypeID,
+                rc.AccessFlag
+            FROM #RandomSections rs
+            CROSS JOIN #BatchedClients bc
+            LEFT JOIN myescreenrandomclientsettings rc WITH (NOLOCK)
+                ON rc.ClientID = bc.ClientID AND rc.RandomSectionID = rs.RandomSectionID
+            WHERE bc.RowNum BETWEEN @StartRow AND @StartRow + @BatchSize - 1
+        )
         INSERT INTO #ClientAvailability (RandomSectionID, ClientAvail)
         SELECT 
-            rs.RandomSectionID,
+            RandomSectionID,
             MAX(CASE 
-                -- Group Level Access
-                WHEN EXISTS (
-                    SELECT 1
-                    FROM clientaccounts ca WITH (NOLOCK)
-                    WHERE ca.ClientID = bc.ClientID
-                      AND EXISTS (SELECT 1 FROM nationalaccountextras WHERE GroupID = bc.ClientID)
-                ) THEN 1
-                -- Master Level Access
-                WHEN EXISTS (
-                    SELECT 1
-                    FROM clientaccounts ca WITH (NOLOCK)
-                    WHERE ca.ClientID = bc.ClientID AND ca.ClientSubAccount = 0
-                ) THEN 1
-                -- Client Level Access
-                WHEN EXISTS (
-                    SELECT 1
-                    FROM clientaccounts ca WITH (NOLOCK)
-                    WHERE ca.ClientID = bc.ClientID AND ca.ClientSubAccount <> 0
-                ) THEN 1
+                WHEN ClientTypeID = 2 AND AccessFlag = 1 THEN 1 -- Group Level Access
+                WHEN ClientTypeID = 1 AND AccessFlag = 1 THEN 1 -- Master Level Access
+                WHEN ClientTypeID = 0 AND AccessFlag = 1 THEN 1 -- Client Level Access
                 ELSE 0 -- Default Denied
             END) AS ClientAvail
-        FROM #RandomSections rs
-        JOIN #BatchedClients bc
-            ON bc.RowNum BETWEEN @StartRow AND @StartRow + @BatchSize - 1
-        GROUP BY rs.RandomSectionID;
+        FROM ClientAccessCTE
+        GROUP BY RandomSectionID;
 
         -- Move to the Next Batch
         SET @StartRow = @StartRow + @BatchSize;
@@ -118,9 +121,6 @@ BEGIN
     SET NOCOUNT OFF;
 END;
 GO
-
-
-
 
 
 
