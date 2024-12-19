@@ -1,3 +1,138 @@
+ 
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Step 1: Retrieve Random Sections (IDs 1 to 10)
+    SELECT RandomSectionID, MenuText, MenuActionV2, Description
+    INTO #RandomSections
+    FROM randomsection WITH (NOLOCK)
+    WHERE RandomSectionID BETWEEN 1 AND 10;
+
+    -- Step 2: Retrieve ClientIDs associated with @DynamicClientID
+    SELECT ClientID INTO #ClientIDs FROM fn_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+    -- Step 3: Initialize Temporary Table for Relevant ClientIDs
+    CREATE TABLE #RelevantClients (
+        ClientID INT,
+        MasterID INT NULL,
+        GroupID INT NULL,
+        IsAvailable INT NULL
+    );
+
+    -- Step 4: Identify Relevant ClientIDs and Preserve MasterID and GroupID
+    INSERT INTO #RelevantClients (ClientID, MasterID, GroupID)
+    SELECT 
+        c.ClientID,
+        ca.ClientAccount AS MasterID,
+        na.GroupID
+    FROM #ClientIDs c
+    LEFT JOIN clientaccounts ca WITH (NOLOCK) ON c.ClientID = ca.ClientID
+    LEFT JOIN nationalaccountextras na WITH (NOLOCK) ON c.ClientID = na.ClientID;
+
+    -- Step 5: Identify Available ClientIDs
+    UPDATE rc
+    SET IsAvailable = 1
+    FROM #RelevantClients rc
+    WHERE EXISTS (
+        SELECT 1
+        FROM myescreenrandomclientsettings cs WITH (NOLOCK)
+        WHERE cs.ClientID = rc.ClientID
+          AND cs.AccessFlag = 1
+    );
+
+    -- Step 6: Delete Irrelevant ClientIDs
+    DELETE FROM #RelevantClients
+    WHERE IsAvailable IS NULL;
+
+    -- Step 7: Calculate Availability for MasterID and GroupID
+    UPDATE rc
+    SET IsAvailable = 1
+    FROM #RelevantClients rc
+    WHERE rc.MasterID IS NOT NULL
+      AND EXISTS (
+          SELECT 1
+          FROM myescreenrandomclientsettings cs WITH (NOLOCK)
+          WHERE cs.ClientID = rc.MasterID
+            AND cs.AccessFlag = 1
+      );
+
+    UPDATE rc
+    SET IsAvailable = 1
+    FROM #RelevantClients rc
+    WHERE rc.GroupID IS NOT NULL
+      AND EXISTS (
+          SELECT 1
+          FROM myescreenrandomclientsettings cs WITH (NOLOCK)
+          WHERE cs.ClientID = rc.GroupID
+            AND cs.AccessFlag = 1
+      );
+
+    -- Step 8: Determine Final Availability
+    SELECT 
+        rs.RandomSectionID,
+        MAX(CASE 
+            WHEN rc.ClientID IS NOT NULL AND rc.IsAvailable = 1 THEN 1 -- Client-Level Availability
+            WHEN rc.MasterID IS NOT NULL AND rc.IsAvailable = 1 THEN 1 -- Master-Level Availability
+            WHEN rc.GroupID IS NOT NULL AND rc.IsAvailable = 1 THEN 1 -- Group-Level Availability
+            ELSE 0 -- Default Denied
+        END) AS ClientAvail,
+        rs.MenuText,
+        rs.MenuActionV2,
+        rs.Description
+    FROM #RandomSections rs
+    LEFT JOIN #RelevantClients rc ON rc.ClientID = rs.RandomSectionID
+    GROUP BY rs.RandomSectionID, rs.MenuText, rs.MenuActionV2, rs.Description;
+
+    -- Cleanup
+    DROP TABLE #RandomSections;
+    DROP TABLE #ClientIDs;
+    DROP TABLE #RelevantClients;
+
+    SET NOCOUNT OFF;
+END;
+GO
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 WITH CombinedClients AS (
     -- Step 1: Add Clients under Authorized Groups and Masters
     SELECT 
