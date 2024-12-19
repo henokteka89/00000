@@ -1,177 +1,97 @@
--- Create a table to store filtered client information
-CREATE TABLE #FilteredClients (
-    ClientID INT,
-    ClientTypeID INT,
-    MasterID INT NULL,
-    GroupID INT NULL,
-    SectionID INT,
-    AccessFlag INT,
-    SecurityXML VARCHAR(1000) NULL
-);
+ 
+    @ClientID INT,
+    @DynamicClientID INT,
+    @UserID INT
+AS
+BEGIN
+    SET NOCOUNT ON;
 
--- Pre-filter logic
-INSERT INTO #FilteredClients (ClientID, ClientTypeID, MasterID, GroupID, SectionID, AccessFlag, SecurityXML)
-SELECT
-    ca.ClientID,
-    -- Determine ClientTypeID based on ClientSubaccount and group existence
-    CASE
-        WHEN c.ClientSubaccount <> 0 THEN 0
-        WHEN EXISTS (SELECT 1 FROM nationalaccountextras WHERE groupid = ca.ClientID) THEN 2
-        ELSE 1
-    END AS ClientTypeID,
-    -- Retrieve MasterID (client with the same account but subaccount = 0)
-    (SELECT TOP 1 clientid 
-     FROM clientaccounts 
-     WHERE clientaccount = c.ClientAccount AND clientsubaccount = 0) AS MasterID,
-    -- Retrieve GroupID from nationalaccountextras
-    (SELECT TOP 1 groupid 
-     FROM nationalaccountextras 
-     WHERE clientid = ca.ClientID) AS GroupID,
-    rs.RandomSectionID,
-    -- AccessFlag and SecurityXML from settings
-    ISNULL(mc.AccessFlag, 0) AS AccessFlag,
-    mc.SecurityXML
-FROM 
-    fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID) AS ca
--- Join with clientaccounts to retrieve ClientSubaccount and ClientAccount
-INNER JOIN 
-    clientaccounts c WITH (NOLOCK)
-    ON ca.ClientID = c.ClientID
-CROSS APPLY (
-    SELECT rs.RandomSectionID FROM randomsection rs
-) rs
-LEFT JOIN 
-    myEscreenRandomClientSectionSettings mc WITH (NOLOCK)
-    ON (mc.ClientID IN (ca.ClientID, 
-                        (SELECT TOP 1 clientid FROM clientaccounts WHERE clientaccount = c.ClientAccount AND clientsubaccount = 0),
-                        (SELECT TOP 1 groupid FROM nationalaccountextras WHERE clientid = ca.ClientID))
-        AND mc.ClientTypeID = 
+    -- Step 1: Retrieve Random Sections
+    SELECT RandomSectionID, MenuText, MenuActionV2, Description
+    INTO #RandomSections
+    FROM randomsection (NOLOCK)
+    WHERE RandomSectionID BETWEEN 1 AND 10;
+
+    -- Step 2: Retrieve ClientIDs associated with @DynamicClientID
+    SELECT DISTINCT ClientID, 
+        CASE 
+            WHEN ca.ClientSubAccount <> 0 THEN 0 -- Sub-client
+            WHEN EXISTS (SELECT 1 FROM nationalaccountextras na WHERE na.GroupID = ca.ClientID) THEN 2 -- Group
+            ELSE 1 -- Master
+        END AS ClientTypeID,
+        COALESCE(
+            (SELECT TOP 1 ClientID 
+             FROM clientaccounts 
+             WHERE ClientAccount = ca.ClientAccount AND ClientSubAccount = 0), 0) AS MasterID,
+        COALESCE(
+            (SELECT GroupID 
+             FROM nationalaccountextras 
+             WHERE ClientID = ca.ClientID), 0) AS GroupID
+    INTO #FilteredClients
+    FROM clientaccounts ca (NOLOCK)
+    WHERE ca.ClientID IN (SELECT EntityID FROM fn_GetClientIDsForDynamicClientID(@DynamicClientID));
+
+    -- Step 3: Initialize Availability Tables
+    CREATE TABLE #UserAvailability (RandomSectionID INT, UserAvail INT);
+    CREATE TABLE #ClientAvailability (RandomSectionID INT, ClientAvail INT);
+
+    -- Step 4: Determine User Availability (Set-based)
+    INSERT INTO #UserAvailability (RandomSectionID, UserAvail)
+    SELECT 
+        rs.RandomSectionID,
         CASE
-            WHEN c.ClientSubaccount <> 0 THEN 0
-            WHEN EXISTS (SELECT 1 FROM nationalaccountextras WHERE groupid = ca.ClientID) THEN 2
-            ELSE 1
-        END
-       AND mc.RandomSectionID = rs.RandomSectionID);
+            WHEN EXISTS (
+                SELECT 1 FROM myescreenrandomusersettings uss (NOLOCK)
+                WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 0
+            ) THEN 0 -- Denied
+            WHEN EXISTS (
+                SELECT 1 FROM myescreenrandomusersettings uss (NOLOCK)
+                WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 1
+            ) THEN 1 -- Granted
+            ELSE NULL -- No setting
+        END AS UserAvail
+    FROM #RandomSections rs;
 
+    -- Step 5: Compute Client Availability (Set-based)
+    INSERT INTO #ClientAvailability (RandomSectionID, ClientAvail)
+    SELECT 
+        rs.RandomSectionID,
+        MAX(CASE 
+            WHEN ca.ClientTypeID = 2 AND rc.AccessFlag = 1 THEN 1 -- Group Level Access
+            WHEN ca.ClientTypeID = 1 AND rc.AccessFlag = 1 THEN 1 -- Master Level Access
+            WHEN ca.ClientTypeID = 0 AND rc.AccessFlag = 1 THEN 1 -- Client Level Access
+            ELSE 0 -- Default Denied
+        END) AS ClientAvail
+    FROM #RandomSections rs
+    CROSS JOIN #FilteredClients ca
+    LEFT JOIN myescreenrandomclientsettings rc (NOLOCK)
+        ON rc.ClientID IN (ca.ClientID, ca.GroupID, ca.MasterID)
+        AND rc.RandomSectionID = rs.RandomSectionID
+        AND rc.ClientTypeID = ca.ClientTypeID
+    GROUP BY rs.RandomSectionID;
 
+    -- Step 6: Combine Results
+    SELECT ca.ClientAvail,
+        CASE 
+            WHEN ua.UserAvail = 0 THEN 0 -- User Denied
+            WHEN ca.ClientAvail = 1 
+                 AND ua.UserAvail = 1 THEN 1 -- Both User and Client Granted
+            ELSE 0 -- Denied
+        END AS UserAvail,
+        rs.MenuText,
+        rs.MenuActionV2,
+        rs.RandomSectionID,
+        rs.Description
+    FROM #RandomSections rs
+    LEFT JOIN #ClientAvailability ca ON ca.RandomSectionID = rs.RandomSectionID
+    LEFT JOIN #UserAvailability ua ON ua.RandomSectionID = rs.RandomSectionID;
 
+    -- Cleanup
+    DROP TABLE #RandomSections;
+    DROP TABLE #FilteredClients;
+    DROP TABLE #UserAvailability;
+    DROP TABLE #ClientAvailability;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
--- Create a table to store filtered client information
-CREATE TABLE #FilteredClients (
-    ClientID INT,
-    ClientTypeID INT,
-    MasterID INT NULL,
-    GroupID INT NULL,
-    SectionID INT,
-    AccessFlag INT,
-    SecurityXML VARCHAR(1000) NULL
-);
-
--- Pre-filter logic
-INSERT INTO #FilteredClients (ClientID, ClientTypeID, MasterID, GroupID, SectionID, AccessFlag, SecurityXML)
-SELECT
-    ca.ClientID,
-    -- Determine ClientTypeID
-    CASE
-        WHEN ca.ClientSubaccount <> 0 THEN 0
-        WHEN EXISTS (SELECT 1 FROM nationalaccountextras WITH (NOLOCK) WHERE groupid = ca.ClientID) THEN 2
-        ELSE 1
-    END AS ClientTypeID,
-    -- MasterID and GroupID
-    (SELECT TOP 1 clientid FROM clientaccounts WHERE clientaccount = ca.ClientAccount AND clientsubaccount = 0) AS MasterID,
-    (SELECT TOP 1 groupid FROM nationalaccountextras WHERE clientid = ca.ClientID) AS GroupID,
-    rs.RandomSectionID,
-    -- AccessFlag and SecurityXML
-    ISNULL(mc.AccessFlag, 0) AS AccessFlag,
-    mc.SecurityXML
-FROM 
-    fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID) AS ca
-CROSS APPLY (
-    SELECT rs.RandomSectionID FROM randomsection rs
-) rs
-LEFT JOIN 
-    myEscreenRandomClientSectionSettings mc WITH (NOLOCK)
-    ON (mc.ClientID = ca.ClientID AND mc.ClientTypeID = 
-        CASE
-            WHEN ca.ClientSubaccount <> 0 THEN 0
-            WHEN EXISTS (SELECT 1 FROM nationalaccountextras WHERE groupid = ca.ClientID) THEN 2
-            ELSE 1
-        END
-       AND mc.RandomSectionID = rs.RandomSectionID);
--- Filter for relevant clients
-DELETE FROM #FilteredClients
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM myEscreenRandomClientSectionSettings mc WITH (NOLOCK)
-    WHERE
-        (ClientTypeID = 2 AND mc.ClientID = #FilteredClients.ClientID AND mc.AccessFlag = 1)
-        OR (ClientTypeID = 1 AND (mc.ClientID = #FilteredClients.ClientID OR mc.ClientID = #FilteredClients.GroupID) AND mc.AccessFlag = 1)
-        OR (ClientTypeID = 0 AND (mc.ClientID = #FilteredClients.ClientID OR mc.ClientID = #FilteredClients.MasterID OR mc.ClientID = #FilteredClients.GroupID) AND mc.AccessFlag = 1)
-);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
--- Step 1: Retrieve all Client IDs related to @DynamicClientID
-WITH FilteredClients AS (
-    SELECT ca.ClientID, ca.ClientAccount, ca.ClientSubAccount, 
-           CASE 
-               WHEN ca.ClientSubAccount <> 0 THEN 0 -- Sub-client
-               WHEN EXISTS (SELECT 1 FROM nationalaccountextras nae WHERE nae.GroupID = ca.ClientID) THEN 2 -- Group
-               ELSE 1 -- Master
-           END AS ClientTypeID,
-           COALESCE((SELECT TOP 1 ClientID FROM clientaccounts 
-                     WHERE ClientAccount = ca.ClientAccount AND ClientSubAccount = 0), 0) AS MasterID,
-           COALESCE((SELECT GroupID FROM nationalaccountextras WHERE ClientID = ca.ClientID), 0) AS GroupID
-    FROM clientaccounts ca
-    WHERE ca.ClientID IN (
-        SELECT EntityID FROM dbo.fn_GetDynamicEntityGroup(@DynamicClientID)
-    )
-)
-SELECT DISTINCT fc.ClientID
-INTO #FilteredClientIDs
-FROM FilteredClients fc
-WHERE EXISTS (
-    SELECT 1
-    FROM myescreenrandomclientsectionsettings rc
-    WHERE rc.ClientID = fc.ClientID 
-      AND rc.RandomSectionID BETWEEN 1 AND 10 -- Only relevant sections
-      AND rc.AccessFlag = 1 -- Ensuring access
-)
-OR EXISTS (
-    SELECT 1
-    FROM myescreenrandomusersectionsettings us
-    WHERE us.UserID = @UserID 
-      AND us.RandomSectionID BETWEEN 1 AND 10
-);
+    SET NOCOUNT OFF;
+END;
+GO
