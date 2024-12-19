@@ -1,3 +1,18 @@
+--check relevance
+SELECT DISTINCT ca.ClientID
+INTO #RelevantClients
+FROM #FilteredClients ca
+LEFT JOIN myescreenrandomclientsettings rc
+    ON rc.ClientID = ca.ClientID
+LEFT JOIN myescreenrandomclientsettings rc_group
+    ON rc_group.ClientID = ca.GroupID
+LEFT JOIN myescreenrandomclientsettings rc_master
+    ON rc_master.ClientID = ca.MasterID
+WHERE 
+    rc.AccessFlag = 1 OR -- Direct Client Access
+    rc_group.AccessFlag = 1 OR -- Group Access
+    rc_master.AccessFlag = 1; -- Master Access
+
 batch
 
 DECLARE @BatchSize INT = 500;
