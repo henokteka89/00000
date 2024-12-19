@@ -1,4 +1,149 @@
  
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Step 1: Retrieve Random Sections (IDs 1 to 10)
+    SELECT RandomSectionID, MenuText, MenuActionV2, Description
+    INTO #RandomSections
+    FROM randomsection WITH (NOLOCK)
+    WHERE RandomSectionID BETWEEN 1 AND 10;
+
+    -- Step 2: Retrieve ClientIDs associated with @DynamicClientID
+    SELECT ClientID INTO #ClientIDs FROM fn_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+    -- Step 3: Filter Relevant Clients for Availability Processing
+    SELECT DISTINCT c.ClientID
+    INTO #FilteredClients
+    FROM #ClientIDs c
+    LEFT JOIN myescreenrandomclientsettings cs WITH (NOLOCK)
+        ON c.ClientID = cs.ClientID
+    WHERE cs.ClientID IS NOT NULL; -- Keep clients with potential availability data
+
+    -- Step 4: Number Clients for Batch Processing
+    WITH NumberedClients AS (
+        SELECT 
+            ClientID,
+            ROW_NUMBER() OVER (ORDER BY ClientID) AS RowNum
+        FROM #FilteredClients
+    )
+    SELECT * INTO #BatchedClients FROM NumberedClients;
+
+    -- Step 5: Initialize Availability Tables
+    CREATE TABLE #UserAvailability (RandomSectionID INT, UserAvail INT);
+    CREATE TABLE #ClientAvailability (RandomSectionID INT, ClientAvail INT);
+
+    -- Step 6: Determine User Availability
+    INSERT INTO #UserAvailability (RandomSectionID, UserAvail)
+    SELECT 
+        rs.RandomSectionID,
+        CASE
+            WHEN EXISTS (
+                SELECT 1 FROM myescreenrandomusersettings uss WITH (NOLOCK)
+                WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 0
+            ) THEN 0 -- Denied
+            WHEN EXISTS (
+                SELECT 1 FROM myescreenrandomusersettings uss WITH (NOLOCK)
+                WHERE uss.UserID = @UserID AND uss.RandomSectionID = rs.RandomSectionID AND uss.accessflag = 1
+            ) THEN 1 -- Granted
+            ELSE NULL -- No setting
+        END AS UserAvail
+    FROM #RandomSections rs;
+
+    -- Step 7: Process Client Availability in Batches
+    DECLARE @BatchSize INT = 500;
+    DECLARE @StartRow INT = 1;
+
+    WHILE EXISTS (SELECT 1 FROM #BatchedClients WHERE RowNum BETWEEN @StartRow AND @StartRow + @BatchSize - 1)
+    BEGIN
+        -- Process Current Batch
+        INSERT INTO #ClientAvailability (RandomSectionID, ClientAvail)
+        SELECT 
+            rs.RandomSectionID,
+            MAX(CASE 
+                -- Group Level Access
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM clientaccounts ca WITH (NOLOCK)
+                    WHERE ca.ClientID = bc.ClientID
+                      AND EXISTS (SELECT 1 FROM nationalaccountextras WHERE GroupID = bc.ClientID)
+                ) THEN 1
+                -- Master Level Access
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM clientaccounts ca WITH (NOLOCK)
+                    WHERE ca.ClientID = bc.ClientID AND ca.ClientSubAccount = 0
+                ) THEN 1
+                -- Client Level Access
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM clientaccounts ca WITH (NOLOCK)
+                    WHERE ca.ClientID = bc.ClientID AND ca.ClientSubAccount <> 0
+                ) THEN 1
+                ELSE 0 -- Default Denied
+            END) AS ClientAvail
+        FROM #RandomSections rs
+        JOIN #BatchedClients bc
+            ON bc.RowNum BETWEEN @StartRow AND @StartRow + @BatchSize - 1
+        GROUP BY rs.RandomSectionID;
+
+        -- Move to the Next Batch
+        SET @StartRow = @StartRow + @BatchSize;
+    END;
+
+    -- Step 8: Determine Final Availability
+    SELECT 
+        ca.ClientAvail,
+        CASE 
+            WHEN ua.UserAvail = 0 THEN 0 -- User Denied
+            WHEN ca.ClientAvail = 1 AND ua.UserAvail = 1 THEN 1 -- Both User and Client Granted
+            ELSE 0 -- Denied
+        END AS UserAvail,
+        rs.MenuText,
+        rs.MenuActionV2,
+        rs.RandomSectionID,
+        rs.Description
+    FROM #RandomSections rs
+    JOIN #ClientAvailability ca ON ca.RandomSectionID = rs.RandomSectionID
+    JOIN #UserAvailability ua ON ua.RandomSectionID = ca.RandomSectionID
+    WHERE rs.RandomSectionID BETWEEN 1 AND 10;
+
+    -- Cleanup
+    DROP TABLE #RandomSections;
+    DROP TABLE #ClientIDs;
+    DROP TABLE #FilteredClients;
+    DROP TABLE #BatchedClients;
+    DROP TABLE #UserAvailability;
+    DROP TABLE #ClientAvailability;
+
+    SET NOCOUNT OFF;
+END;
+GO
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     @ClientID INT,
     @DynamicClientID INT,
     @UserID INT
