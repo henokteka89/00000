@@ -1,4 +1,35 @@
- 
+batch
+
+DECLARE @BatchSize INT = 500;
+DECLARE @Start INT = 1, @End INT = @BatchSize, @TotalRows INT;
+
+SELECT @TotalRows = COUNT(*) FROM #FilteredClients;
+
+WHILE @Start <= @TotalRows
+BEGIN
+    INSERT INTO #ClientAvailability (RandomSectionID, ClientAvail)
+    SELECT rs.RandomSectionID,
+        MAX(CASE 
+            WHEN ca.ClientTypeID = 2 AND rc.AccessFlag = 1 THEN 1
+            WHEN ca.ClientTypeID = 1 AND rc.AccessFlag = 1 THEN 1
+            WHEN ca.ClientTypeID = 0 AND rc.AccessFlag = 1 THEN 1
+            ELSE 0
+        END) AS ClientAvail
+    FROM #RandomSections rs
+    JOIN (
+        SELECT * 
+        FROM #FilteredClients 
+        WHERE ROW_NUMBER() OVER (ORDER BY ClientID) BETWEEN @Start AND @End
+    ) ca ON rc.ClientID IN (ca.ClientID, ca.GroupID, ca.MasterID)
+    LEFT JOIN myescreenrandomclientsettings rc
+        ON rc.ClientID = ca.ClientID AND rc.RandomSectionID = rs.RandomSectionID AND rc.ClientTypeID = ca.ClientTypeID
+    GROUP BY rs.RandomSectionID;
+
+    SET @Start = @Start + @BatchSize;
+    SET @End = @End + @BatchSize;
+END;
+
+
     @ClientID INT,
     @DynamicClientID INT,
     @UserID INT
