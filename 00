@@ -1,3 +1,120 @@
+-- Temporary tables to store intermediate results
+CREATE TABLE #ClientLevel (
+    ClientAvail INT,
+    RandomSectionID INT
+);
+
+CREATE TABLE #GroupLevel (
+    ClientAvail INT,
+    RandomSectionID INT
+);
+
+CREATE TABLE #MasterLevel (
+    ClientAvail INT,
+    RandomSectionID INT
+);
+
+CREATE TABLE #FinalClientAvailability (
+    ClientAvail INT,
+    RandomSectionID INT
+);
+
+-- Step 1: Retrieve Random Sections (IDs 1 to 10)
+SELECT RANDOMSECTIONID, MENUTEXT, NAVIGATIONTEXT2, DESCRIPTION
+INTO #RandomSections
+FROM RANDOMSECTION WITH (NOLOCK)
+WHERE RANDOMSECTIONID BETWEEN 1 AND 10;
+
+-- Step 2: Retrieve ClientIDs for the specified Dynamic Client ID
+SELECT DISTINCT
+    ClientID
+INTO #Clients
+FROM fn_DCG_GetClientIDsForDynamicClientID(@DynamicClientID);
+
+-- Step 3: Determine Client Type (Master, Group, or Client)
+SELECT DISTINCT
+    c.ClientID,
+    CASE
+        WHEN c.ClientSubAccount <> 0 THEN 0 -- Client
+        WHEN EXISTS (SELECT 1 FROM NationalAccountExtras WITH (NOLOCK) WHERE GroupID = c.ClientID) THEN 2 -- Group
+        ELSE 1 -- Master
+    END AS ClientTypeID,
+    (SELECT TOP 1 ClientID FROM ClientAccounts WITH (NOLOCK) WHERE ClientAccount = c.ClientAccount AND ClientSubAccount = 0) AS MasterID,
+    (SELECT TOP 1 GroupID FROM NationalAccountExtras WITH (NOLOCK) WHERE ClientID = c.ClientID) AS GroupID
+INTO #ClientHierarchy
+FROM ClientAccounts c WITH (NOLOCK)
+JOIN #Clients cl ON cl.ClientID = c.ClientID;
+
+-- Step 4: Determine Client-Level Availability
+INSERT INTO #ClientLevel (ClientAvail, RandomSectionID)
+SELECT 
+    1 AS ClientAvail,
+    rs.RandomSectionID
+FROM MYESCREENRANDOMCLIENTSETTINGS mrc WITH (NOLOCK)
+JOIN #Clients cl ON cl.ClientID = mrc.ClientID
+JOIN #RandomSections rs ON rs.RandomSectionID = mrc.RandomSectionID
+WHERE mrc.AccessFlag = 1;
+
+-- Step 5: Determine Group-Level Availability
+INSERT INTO #GroupLevel (ClientAvail, RandomSectionID)
+SELECT 
+    1 AS ClientAvail,
+    rs.RandomSectionID
+FROM MYESCREENRANDOMCLIENTSETTINGS mrc WITH (NOLOCK)
+JOIN #ClientHierarchy ch ON ch.GroupID = mrc.ClientID
+JOIN #RandomSections rs ON rs.RandomSectionID = mrc.RandomSectionID
+WHERE mrc.ClientTypeID = 2 AND mrc.AccessFlag = 1;
+
+-- Step 6: Determine Master-Level Availability
+INSERT INTO #MasterLevel (ClientAvail, RandomSectionID)
+SELECT 
+    1 AS ClientAvail,
+    rs.RandomSectionID
+FROM MYESCREENRANDOMCLIENTSETTINGS mrc WITH (NOLOCK)
+JOIN #ClientHierarchy ch ON ch.MasterID = mrc.ClientID
+JOIN #RandomSections rs ON rs.RandomSectionID = mrc.RandomSectionID
+WHERE mrc.ClientTypeID = 1 AND mrc.AccessFlag = 1;
+
+-- Step 7: Combine Results to Determine Final Availability
+INSERT INTO #FinalClientAvailability (ClientAvail, RandomSectionID)
+SELECT DISTINCT ClientAvail, RandomSectionID FROM #ClientLevel
+UNION
+SELECT DISTINCT ClientAvail, RandomSectionID FROM #GroupLevel
+UNION
+SELECT DISTINCT ClientAvail, RandomSectionID FROM #MasterLevel;
+
+-- Step 8: Join with Random Sections and Return Final Availability
+SELECT 
+    rs.RandomSectionID,
+    ISNULL(fca.ClientAvail, 0) AS ClientAvail
+FROM #RandomSections rs
+LEFT JOIN #FinalClientAvailability fca ON rs.RandomSectionID = fca.RandomSectionID
+ORDER BY rs.RandomSectionID;
+
+-- Cleanup
+DROP TABLE IF EXISTS #RandomSections;
+DROP TABLE IF EXISTS #Clients;
+DROP TABLE IF EXISTS #ClientHierarchy;
+DROP TABLE IF EXISTS #ClientLevel;
+DROP TABLE IF EXISTS #GroupLevel;
+DROP TABLE IF EXISTS #MasterLevel;
+DROP TABLE IF EXISTS #FinalClientAvailability;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
  
 BEGIN
     SET NOCOUNT ON;
