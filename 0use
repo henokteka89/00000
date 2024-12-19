@@ -1,4 +1,4 @@
-CREATE PROCEDURE usp_MyUsers_Get_RandomsSubMenu_blend
+ 
     @ClientID INT,
     @DynamicClientID INT,
     @UserID INT
